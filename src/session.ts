@@ -1,31 +1,47 @@
-import type { CapabilityResult, CapabilityServices } from './capabilities.js';
-import { coachTools, executeTool } from './capabilities.js';
-import { formatFeedbackNote } from './analysis/analyzer.js';
-import type { RehearsalAnalyzer } from './analysis/analyzer.js';
-import type { CoachMemory } from './memory.js';
-import { formatDuration } from './memory.js';
-import type { Persona } from './persona.js';
-import { buildInstructions, defaultPersona } from './persona.js';
-import { PcmRecorder } from './recorder.js';
-import type { ProviderEvent, RealtimeProvider } from './realtime/provider.js';
-import type { MeetingContext, Mode, RehearsalTake } from './types.js';
+import type { CapabilityResult, CapabilityServices } from './capabilities';
+import { coachTools, executeTool } from './capabilities';
+import { formatFeedbackNote } from './analysis/analyzer';
+import type { RehearsalAnalyzer } from './analysis/analyzer';
+import type { MemoryProposal } from './gate';
+import { decideMemory, matchCount } from './gate';
+import type { CoachMemory } from './memory';
+import { formatDuration, takeId } from './memory';
+import type { Persona } from './persona';
+import { buildInstructions, defaultPersona } from './persona';
+import type { ProviderEvent, RealtimeProvider } from './realtime/provider';
+import type {
+  ExcerptPlayer,
+  ExcerptResult,
+  MeetingContext,
+  Mode,
+  RecordedTake,
+  RehearsalTake,
+  TakeRecorder,
+} from './types';
 
 export interface CoachSessionOptions {
   provider: RealtimeProvider;
   analyzer: RehearsalAnalyzer;
   memory: CoachMemory;
+  recorder: TakeRecorder;
+  player?: ExcerptPlayer;
   persona?: Persona;
   voice?: string;
-  playAudio?: (pcm: Buffer) => void;
+  playAudio?: (pcm: Uint8Array) => void;
   stopAudio?: () => void;
   onTranscript?: (role: 'user' | 'coach', text: string) => void;
   onStatus?: (line: string) => void;
+  /** Fired on every coaching/rehearsal transition — bodies use it to mute
+   * the coach's audio path deterministically during a take. */
+  onModeChange?: (mode: Mode) => void;
+  /** Analysis lifecycle, for UI state ("listening back…"). */
+  onAnalysis?: (state: 'started' | 'ready' | 'failed', takeNumber: number) => void;
 }
 
 /**
- * The orchestrator. Owns the mode state machine and the rehearsal take
- * lifecycle; everything else is delegated through the three seams
- * (provider, analyzer, memory).
+ * The orchestrator. Owns the mode state machine, the take lifecycle, and
+ * the memory gate; everything else is delegated through the seams
+ * (provider, analyzer, memory, recorder, player).
  */
 export class CoachSession {
   mode: Mode = 'coaching';
@@ -34,9 +50,12 @@ export class CoachSession {
   private readonly provider: RealtimeProvider;
   private readonly analyzer: RehearsalAnalyzer;
   private readonly memory: CoachMemory;
+  private readonly recorder: TakeRecorder;
+  private readonly player?: ExcerptPlayer;
   private readonly persona: Persona;
-  private readonly recorder = new PcmRecorder();
-  private currentTake?: RehearsalTake;
+  private currentTake?: Omit<RehearsalTake, 'seconds'>;
+  private readonly takes = new Map<string, RecordedTake>();
+  private lastTakeId?: string;
   private pendingAnalyses: Promise<void>[] = [];
   private readonly opts: CoachSessionOptions;
 
@@ -45,6 +64,8 @@ export class CoachSession {
     this.provider = opts.provider;
     this.analyzer = opts.analyzer;
     this.memory = opts.memory;
+    this.recorder = opts.recorder;
+    this.player = opts.player;
     this.persona = opts.persona ?? defaultPersona;
   }
 
@@ -58,33 +79,36 @@ export class CoachSession {
   }
 
   async stop(): Promise<void> {
-    // A take interrupted by shutdown still lands on disk, just unanalyzed.
+    // A take interrupted by shutdown still lands in memory, just unanalyzed.
     if (this.recorder.active) {
-      const rec = this.recorder.stop();
-      this.status(`rehearsal recording saved unanalyzed: ${rec.path}`);
+      const rec = await this.recorder.stop();
+      rec.ref = this.memory.persistRecording(rec);
+      this.status(`rehearsal recording saved unanalyzed: ${rec.ref}`);
     }
     await this.provider.close();
   }
 
   /** Every mic frame flows through here: to the provider always, and into
    * the recorder while a rehearsal is running. */
-  sendMicAudio(pcm: Buffer): void {
+  sendMicAudio(pcm: Uint8Array): void {
     this.provider.sendUserAudio(pcm);
     this.recorder.write(pcm);
   }
 
-  /** CLI fallback for when the model misses the handoff out of a rehearsal. */
+  /** Fallback for when the model misses the handoff out of a rehearsal
+   * (the CLI's Enter key, a browser button). */
   endRehearsalManually(): void {
     if (this.mode !== 'rehearsal') return;
-    const result = this.endRehearsal();
-    if (typeof result.error === 'string') {
-      this.status(result.error);
-      return;
-    }
-    this.provider.injectSystemNote(
-      `The user manually ended the rehearsal (${String(result.seconds)}s captured); the analysis is running and will arrive as a system note. Acknowledge briefly.`,
-      { startResponse: true }
-    );
+    void Promise.resolve(this.endRehearsal()).then((result) => {
+      if (typeof result.error === 'string') {
+        this.status(result.error);
+        return;
+      }
+      this.provider.injectSystemNote(
+        `The user manually ended the rehearsal (${String(result.seconds)}s captured); the analysis is running and will arrive as a system note. Acknowledge briefly.`,
+        { startResponse: true }
+      );
+    });
   }
 
   /** Resolves when all dispatched analyses have settled (tests, shutdown). */
@@ -152,15 +176,31 @@ export class CoachSession {
         this.memory.addMeetingNote(this.activeMeeting.slug, note);
         return { ok: true };
       },
-      remember: (learning) => {
-        this.memory.addLearning(learning);
-        this.refreshInstructions();
-        this.status(`learned: ${learning}`);
-        return { ok: true };
-      },
+      remember: (proposal) => this.remember(proposal),
       beginRehearsal: () => this.beginRehearsal(),
       endRehearsal: () => this.endRehearsal(),
+      playExcerpt: (input) => this.playExcerpt(input),
     };
+  }
+
+  /** The gate decides; the model only proposes. */
+  private remember(proposal: MemoryProposal): CapabilityResult {
+    const priorMatches = matchCount(proposal.statement, [
+      ...this.memory.learnings(),
+      ...this.memory.candidates(),
+    ]);
+    const decision = decideMemory(proposal, priorMatches);
+    if (decision.action === 'save') {
+      this.memory.addLearning(`[${proposal.category}] ${proposal.statement}`);
+      this.refreshInstructions();
+      this.status(`learned: ${proposal.statement}`);
+    } else if (decision.action === 'candidate') {
+      this.memory.addCandidate(`[${proposal.category}] ${proposal.statement}`);
+      this.status(`memory candidate held: ${proposal.statement}`);
+    } else {
+      this.status(`memory ${decision.action}: ${proposal.statement}`);
+    }
+    return { action: decision.action, reason: decision.reason, statement: proposal.statement };
   }
 
   private beginRehearsal(): CapabilityResult {
@@ -172,42 +212,80 @@ export class CoachSession {
       };
     const meeting = this.activeMeeting;
     const takeNumber = this.memory.rehearsalCount(meeting.slug) + 1;
-    const wavPath = this.memory.recordingPath(meeting.slug, takeNumber);
-    this.recorder.start(wavPath);
-    this.currentTake = { meeting, takeNumber, wavPath, seconds: 0 };
-    this.mode = 'rehearsal';
+    const id = takeId(meeting.slug, takeNumber);
+    this.recorder.start(id);
+    this.currentTake = { meeting, takeNumber, id };
+    this.setMode('rehearsal');
     this.status(`recording take ${takeNumber} for "${meeting.title}"`);
     return {
       ok: true,
       recording: true,
       take: takeNumber,
+      recording_id: id,
       note: 'Stay completely silent until the user steps out of the run-through, then call end_rehearsal.',
     };
   }
 
-  private endRehearsal(): CapabilityResult {
+  private async endRehearsal(): Promise<CapabilityResult> {
     if (this.mode !== 'rehearsal' || !this.currentTake) return { error: 'no rehearsal is running' };
-    const rec = this.recorder.stop();
-    const take: RehearsalTake = { ...this.currentTake, seconds: rec.seconds };
+    const pending = this.currentTake;
     this.currentTake = undefined;
-    this.mode = 'coaching';
-    this.status(`captured ${formatDuration(rec.seconds)} — analysis dispatched`);
-    this.dispatchAnalysis(take);
+    this.setMode('coaching');
+    let recorded: RecordedTake;
+    try {
+      recorded = await this.recorder.stop();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.status(`take capture failed: ${message}`);
+      return {
+        error: `The recording could not be finalized (${message}). Tell the user plainly and offer another take.`,
+      };
+    }
+    recorded.ref = this.memory.persistRecording(recorded);
+    this.takes.set(recorded.id, recorded);
+    this.lastTakeId = recorded.id;
+    const take: RehearsalTake = { ...pending, seconds: recorded.seconds };
+    this.status(`captured ${formatDuration(recorded.seconds)} — analysis dispatched`);
+    this.dispatchAnalysis(take, recorded);
     return {
       ok: true,
-      seconds: Math.round(rec.seconds),
+      seconds: Math.round(recorded.seconds),
+      recording_id: recorded.id,
       status: 'analysis_started',
       note: 'Say one short holding line; the analysis arrives shortly as a system note. Keep the conversation going meanwhile.',
     };
   }
 
-  private dispatchAnalysis(take: RehearsalTake): void {
+  private async playExcerpt(input: {
+    recordingId?: string;
+    startMs: number;
+    endMs: number;
+  }): Promise<ExcerptResult> {
+    if (!this.player) return { played: false, reason: 'Excerpt replay is not available in this environment.' };
+    const id = input.recordingId ?? this.lastTakeId;
+    const take = id ? this.takes.get(id) : undefined;
+    if (!take) return { played: false, reason: 'That take is no longer available to replay.' };
+    const startMs = Math.max(0, Math.round(input.startMs));
+    const durationMs = Math.round(take.seconds * 1000);
+    const endMs = Math.min(Math.max(Math.round(input.endMs), startMs + 250), Math.max(durationMs, startMs + 250));
+    this.status(`replaying ${take.id} ${startMs}–${endMs}ms`);
+    return this.player.play(take, startMs, endMs);
+  }
+
+  private dispatchAnalysis(take: RehearsalTake, recorded: RecordedTake): void {
+    this.opts.onAnalysis?.('started', take.takeNumber);
     const pending = this.analyzer
-      .analyze({ wavPath: take.wavPath, meeting: take.meeting, learnings: this.memory.learnings() })
+      .analyze({
+        wav: recorded.wav,
+        durationMs: Math.round(recorded.seconds * 1000),
+        meeting: take.meeting,
+        learnings: this.memory.learnings(),
+      })
       .then((feedback) => {
         this.memory.addRehearsalFeedback(take, feedback);
         this.provider.injectSystemNote(formatFeedbackNote(take, feedback), { startResponse: true });
         this.status(`analysis ready for take ${take.takeNumber}`);
+        this.opts.onAnalysis?.('ready', take.takeNumber);
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
@@ -216,8 +294,15 @@ export class CoachSession {
           { startResponse: true }
         );
         this.status(`analysis failed: ${message}`);
+        this.opts.onAnalysis?.('failed', take.takeNumber);
       });
     this.pendingAnalyses.push(pending);
+  }
+
+  private setMode(mode: Mode): void {
+    if (this.mode === mode) return;
+    this.mode = mode;
+    this.opts.onModeChange?.(mode);
   }
 
   private instructions(): string {

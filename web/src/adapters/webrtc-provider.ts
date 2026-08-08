@@ -1,33 +1,35 @@
-import WebSocket from 'ws';
-import { SAMPLE_RATE } from '../types';
 import type {
   ProviderEvent,
   RealtimeProvider,
   RealtimeSessionConfig,
-} from './provider';
+} from '../../../src/realtime/provider';
 
-export interface OpenAIRealtimeOptions {
-  apiKey: string;
-  /** e.g. "gpt-realtime" */
-  model: string;
-  voice?: string;
-  transcriptionModel?: string;
-  url?: string;
+export interface WebRTCProviderOptions {
+  /** The user's mic stream — the browser owns it; WebRTC carries it natively. */
+  stream: MediaStream;
+  /** Where the coach's voice plays. The shell mutes this during rehearsals. */
+  audioElement: HTMLAudioElement;
+  /** Relay endpoint that exchanges SDP with OpenAI using the server key. */
+  sessionUrl?: string;
+  /** UI nicety: response lifecycle for the presence animation. */
+  onActivity?: (state: 'speaking' | 'idle') => void;
 }
 
 /**
- * OpenAI Realtime API over websocket. Speaks the GA event shapes and
- * tolerates the older beta names on receive, since the two differ only in
- * naming for everything this harness consumes.
+ * Seam 1, browser edition: OpenAI Realtime over WebRTC. The mic and the
+ * coach's voice travel as media tracks (so sendUserAudio is a no-op), and
+ * the same data-channel event grammar the websocket adapter speaks is
+ * translated into ProviderEvents here.
  */
-export class OpenAIRealtimeProvider implements RealtimeProvider {
-  private ws?: WebSocket;
+export class WebRTCRealtimeProvider implements RealtimeProvider {
+  private pc?: RTCPeerConnection;
+  private channel?: RTCDataChannel;
   private handler: (event: ProviderEvent) => void = () => {};
   private responseInFlight = false;
   /** call_id -> tool name, learned from function_call items as they appear. */
-  private callNames = new Map<string, string>();
+  private readonly callNames = new Map<string, string>();
 
-  constructor(private readonly opts: OpenAIRealtimeOptions) {}
+  constructor(private readonly opts: WebRTCProviderOptions) {}
 
   onEvent(handler: (event: ProviderEvent) => void): void {
     this.handler = handler;
@@ -38,35 +40,57 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
   }
 
   async connect(config: RealtimeSessionConfig): Promise<void> {
-    const base = this.opts.url ?? 'wss://api.openai.com/v1/realtime';
-    const ws = new WebSocket(`${base}?model=${encodeURIComponent(this.opts.model)}`, {
-      headers: { Authorization: `Bearer ${this.opts.apiKey}` },
-    });
-    this.ws = ws;
+    const pc = new RTCPeerConnection();
+    this.pc = pc;
+    for (const track of this.opts.stream.getTracks()) pc.addTrack(track, this.opts.stream);
+    pc.ontrack = (event) => {
+      const stream = event.streams[0];
+      if (!stream) return;
+      this.opts.audioElement.srcObject = stream;
+      void this.opts.audioElement.play().catch(() => undefined);
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        this.emit({ type: 'closed', reason: `connection ${pc.connectionState}` });
+      }
+    };
 
-    ws.on('message', (data) => {
-      let event: Record<string, unknown>;
+    const channel = pc.createDataChannel('oai-events');
+    this.channel = channel;
+    channel.onmessage = (event) => {
+      let parsed: Record<string, unknown>;
       try {
-        event = JSON.parse(data.toString());
+        parsed = JSON.parse(String(event.data));
       } catch {
         return;
       }
-      this.onServerEvent(event);
+      this.onServerEvent(parsed);
+    };
+    const open = new Promise<void>((resolve, reject) => {
+      channel.onopen = () => resolve();
+      channel.onerror = () => reject(new Error('The voice data channel failed to open.'));
     });
-    ws.on('close', (_code, reason) => this.emit({ type: 'closed', reason: reason.toString() }));
 
-    await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve());
-      ws.once('error', (err) => reject(err));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    const response = await fetch(this.opts.sessionUrl ?? '/api/realtime/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/sdp' },
+      body: offer.sdp ?? '',
     });
-    // Errors after connect are events, not exceptions.
-    ws.on('error', (err) => this.emit({ type: 'error', message: err.message }));
+    if (!response.ok) {
+      const payload = (await response.json().catch(() => ({}))) as { error?: string };
+      throw new Error(payload.error || 'The coach could not start a voice session.');
+    }
+    await pc.setRemoteDescription({ type: 'answer', sdp: await response.text() });
+    await open;
 
+    // The relay created a bare session; the behavior contract is applied
+    // here, through the same session.update the websocket adapter uses.
     this.send({
       type: 'session.update',
       session: {
         type: 'realtime',
-        model: this.opts.model,
         instructions: config.instructions,
         tools: config.tools.map((t) => ({
           type: 'function',
@@ -75,37 +99,19 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
           parameters: t.parameters,
         })),
         tool_choice: 'auto',
-        audio: {
-          input: {
-            format: { type: 'audio/pcm', rate: SAMPLE_RATE },
-            transcription: { model: this.opts.transcriptionModel ?? 'gpt-4o-mini-transcribe' },
-            turn_detection: { type: 'semantic_vad' },
-          },
-          output: {
-            format: { type: 'audio/pcm', rate: SAMPLE_RATE },
-            voice: config.voice ?? this.opts.voice ?? 'marin',
-          },
-        },
       },
     });
   }
 
   async close(): Promise<void> {
-    const ws = this.ws;
-    if (!ws || ws.readyState === WebSocket.CLOSED) return;
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, 1500);
-      ws.once('close', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      ws.close();
-    });
+    this.channel?.close();
+    this.pc?.close();
+    this.channel = undefined;
+    this.pc = undefined;
   }
 
-  sendUserAudio(pcm: Uint8Array): void {
-    this.send({ type: 'input_audio_buffer.append', audio: Buffer.from(pcm).toString('base64') });
-  }
+  /** WebRTC carries the mic natively; PCM frames are not our transport. */
+  sendUserAudio(_pcm: Uint8Array): void {}
 
   updateInstructions(instructions: string): void {
     this.send({ type: 'session.update', session: { type: 'realtime', instructions } });
@@ -136,7 +142,7 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
   }
 
   private send(payload: Record<string, unknown>): void {
-    if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(payload));
+    if (this.channel?.readyState === 'open') this.channel.send(JSON.stringify(payload));
   }
 
   private onServerEvent(e: Record<string, unknown>): void {
@@ -144,19 +150,15 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
     switch (type) {
       case 'response.created':
         this.responseInFlight = true;
+        this.opts.onActivity?.('speaking');
         break;
       case 'response.done':
         this.responseInFlight = false;
+        this.opts.onActivity?.('idle');
         break;
 
-      case 'response.output_audio.delta': // GA
-      case 'response.audio.delta': { // beta
-        if (typeof e.delta === 'string') this.emit({ type: 'audio', pcm: Buffer.from(e.delta, 'base64') });
-        break;
-      }
-
-      case 'response.output_audio_transcript.done': // GA
-      case 'response.audio_transcript.done': { // beta
+      case 'response.output_audio_transcript.done':
+      case 'response.audio_transcript.done': {
         if (typeof e.transcript === 'string' && e.transcript.trim() !== '')
           this.emit({ type: 'assistant_transcript', text: e.transcript.trim() });
         break;
@@ -172,8 +174,8 @@ export class OpenAIRealtimeProvider implements RealtimeProvider {
         this.emit({ type: 'user_speech_started' });
         break;
 
-      case 'conversation.item.added': // GA
-      case 'conversation.item.created': { // beta
+      case 'conversation.item.added':
+      case 'conversation.item.created': {
         const item = e.item as Record<string, unknown> | undefined;
         if (item?.type === 'function_call' && typeof item.call_id === 'string' && typeof item.name === 'string')
           this.callNames.set(item.call_id, item.name);

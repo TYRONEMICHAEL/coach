@@ -10,7 +10,10 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "test": "node --import tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "web:dev": "npm --prefix web run dev",
+    "web:build": "npm --prefix web run build",
+    "web:serve": "tsx web/server.ts"
   },
   "dependencies": {
     "ws": "^8.18.0"

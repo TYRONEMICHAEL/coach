@@ -24,7 +24,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoachConfig {
     openrouterApiKey: env.OPENROUTER_API_KEY as string,
     realtimeModel: env.COACH_MODEL ?? 'gpt-realtime',
     voice: env.COACH_VOICE ?? 'marin',
-    analyzerModel: env.COACH_ANALYZER_MODEL ?? 'google/gemini-2.5-flash',
+    // inkling-small over gemini-flash by evidence, not vibes: on a pure-tone
+    // control take (2026-08-08), gemini fabricated a verbatim "quote" and a
+    // coaching priority; inkling correctly returned "mic check, no speech".
+    analyzerModel: env.COACH_ANALYZER_MODEL ?? 'thinkingmachines/inkling-small',
     dataDir: env.COACH_DATA_DIR ?? path.join(coachRoot, 'data'),
     coachName: env.COACH_NAME ?? 'Coach',
   };

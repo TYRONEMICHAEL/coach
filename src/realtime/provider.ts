@@ -19,7 +19,7 @@ export interface RealtimeSessionConfig {
 }
 
 export type ProviderEvent =
-  | { type: 'audio'; pcm: Buffer }
+  | { type: 'audio'; pcm: Uint8Array }
   | { type: 'user_speech_started' }
   | { type: 'user_transcript'; text: string }
   | { type: 'assistant_transcript'; text: string }
@@ -31,8 +31,9 @@ export interface RealtimeProvider {
   connect(config: RealtimeSessionConfig): Promise<void>;
   close(): Promise<void>;
 
-  /** Stream a frame of the user's mic audio. Safe to call continuously. */
-  sendUserAudio(pcm: Buffer): void;
+  /** Stream a frame of the user's mic audio. Safe to call continuously.
+   * Transports that carry the mic natively (WebRTC) may ignore this. */
+  sendUserAudio(pcm: Uint8Array): void;
 
   /** Replace the session instructions (used when memory or mode context changes). */
   updateInstructions(instructions: string): void;

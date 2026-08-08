@@ -2,7 +2,7 @@ import type {
   ProviderEvent,
   RealtimeProvider,
   RealtimeSessionConfig,
-} from './provider.js';
+} from './provider';
 
 /** Scripted provider for tests: records everything the session does to it,
  * and lets tests emit provider events by hand. */
@@ -25,7 +25,7 @@ export class MockRealtimeProvider implements RealtimeProvider {
     this.closed = true;
   }
 
-  sendUserAudio(pcm: Buffer): void {
+  sendUserAudio(pcm: Uint8Array): void {
     this.sentAudioBytes += pcm.length;
   }
 

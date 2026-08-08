@@ -1,17 +1,18 @@
 import * as readline from 'node:readline';
-import { OpenRouterAnalyzer } from './analysis/openrouter.js';
-import { assertSoxInstalled, createSpeaker, startMic } from './audio/sox.js';
-import { loadConfig } from './config.js';
-import { CoachMemory } from './memory.js';
-import { defaultPersona } from './persona.js';
-import { OpenAIRealtimeProvider } from './realtime/openai.js';
-import { CoachSession } from './session.js';
+import { OpenRouterAnalyzer } from './analysis/openrouter';
+import { assertSoxInstalled, createSpeaker, SoxExcerptPlayer, startMic } from './audio/sox';
+import { loadConfig } from './config';
+import { defaultPersona } from './persona';
+import { FileCoachMemory } from './node/memory';
+import { PcmTakeRecorder } from './recorder';
+import { OpenAIRealtimeProvider } from './realtime/openai';
+import { CoachSession } from './session';
 
 async function main(): Promise<void> {
   const config = loadConfig();
   assertSoxInstalled();
 
-  const memory = new CoachMemory(config.dataDir);
+  const memory = new FileCoachMemory(config.dataDir);
   const speaker = createSpeaker();
   const session = new CoachSession({
     provider: new OpenAIRealtimeProvider({
@@ -24,6 +25,8 @@ async function main(): Promise<void> {
       model: config.analyzerModel,
     }),
     memory,
+    recorder: new PcmTakeRecorder(),
+    player: new SoxExcerptPlayer(),
     persona: { ...defaultPersona, name: config.coachName },
     voice: config.voice,
     playAudio: (pcm) => speaker.play(pcm),

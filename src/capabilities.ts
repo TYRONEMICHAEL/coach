@@ -1,4 +1,6 @@
-import type { RealtimeTool } from './realtime/provider.js';
+import type { MemoryProposal } from './gate';
+import type { RealtimeTool } from './realtime/provider';
+import type { ExcerptResult } from './types';
 
 export type CapabilityResult = Record<string, unknown>;
 
@@ -7,9 +9,16 @@ export type CapabilityResult = Record<string, unknown>;
 export interface CapabilityServices {
   setMeeting(input: { title: string; when?: string; goal?: string }): CapabilityResult;
   addMeetingNote(note: string): CapabilityResult;
-  remember(learning: string): CapabilityResult;
+  /** The gate decides; the result reports save/candidate/confirm/ignore. */
+  remember(proposal: MemoryProposal): CapabilityResult;
   beginRehearsal(): CapabilityResult;
-  endRehearsal(): CapabilityResult;
+  endRehearsal(): Promise<CapabilityResult> | CapabilityResult;
+  /** Replay a precise slice of the user's own take. */
+  playExcerpt(input: {
+    recordingId?: string;
+    startMs: number;
+    endMs: number;
+  }): Promise<ExcerptResult> | ExcerptResult;
 }
 
 export function coachTools(): RealtimeTool[] {
@@ -40,11 +49,28 @@ export function coachTools(): RealtimeTool[] {
     {
       name: 'remember',
       description:
-        'Save a durable learning about the user, kept across sessions — a pattern in how they think or present. Not session trivia.',
+        'Propose durable information about the user — a pattern in how they think or present, a stated preference or goal. Not session trivia. The harness, not you, decides whether it is saved, held as a candidate, needs confirmation, or is ignored; relay a confirmation request naturally.',
       parameters: {
         type: 'object',
-        properties: { learning: { type: 'string' } },
-        required: ['learning'],
+        properties: {
+          statement: { type: 'string', description: 'The durable statement, in plain words.' },
+          category: {
+            type: 'string',
+            enum: ['preference', 'goal', 'meeting_context', 'coaching_pattern'],
+          },
+          source: {
+            type: 'string',
+            enum: ['explicit_user_statement', 'inference', 'repeated_pattern', 'test_or_setup'],
+          },
+          confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+          evidence: { type: 'string', description: 'What was said or observed that supports it.' },
+          sensitive: { type: 'boolean', description: 'Health, relationships, money, conflict.' },
+          user_confirmed: {
+            type: 'boolean',
+            description: 'True only after the user explicitly agreed to keep this.',
+          },
+        },
+        required: ['statement', 'category', 'source', 'confidence', 'evidence', 'sensitive', 'user_confirmed'],
       },
     },
     {
@@ -58,6 +84,23 @@ export function coachTools(): RealtimeTool[] {
       description:
         'The user has stepped out of the run-through and is talking to you again. Stops recording and starts the analysis, which arrives later as a system note.',
       parameters: { type: 'object', properties: {} },
+    },
+    {
+      name: 'play_excerpt',
+      description:
+        'Play a precise excerpt of the user\'s own recorded take back to them — the moment cited in the analysis, or any span they ask to hear. Use the clip start/end milliseconds from the analysis note.',
+      parameters: {
+        type: 'object',
+        properties: {
+          recording_id: {
+            type: 'string',
+            description: 'The take to replay; defaults to the most recent take.',
+          },
+          start_ms: { type: 'number' },
+          end_ms: { type: 'number' },
+        },
+        required: ['start_ms', 'end_ms'],
+      },
     },
   ];
 }
@@ -80,17 +123,45 @@ export async function executeTool(
       case 'meeting_note':
         return services.addMeetingNote(requireString(args, 'note'));
       case 'remember':
-        return services.remember(requireString(args, 'learning'));
+        return services.remember(parseProposal(args));
       case 'begin_rehearsal':
         return services.beginRehearsal();
       case 'end_rehearsal':
-        return services.endRehearsal();
+        return await services.endRehearsal();
+      case 'play_excerpt':
+        return (await services.playExcerpt({
+          recordingId: optionalString(args, 'recording_id'),
+          startMs: requireNumber(args, 'start_ms'),
+          endMs: requireNumber(args, 'end_ms'),
+        })) as unknown as CapabilityResult;
       default:
         return { error: `unknown tool: ${name}` };
     }
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+function parseProposal(args: Record<string, unknown>): MemoryProposal {
+  return {
+    statement: requireString(args, 'statement'),
+    category: requireEnum(args, 'category', [
+      'preference',
+      'goal',
+      'meeting_context',
+      'coaching_pattern',
+    ] as const),
+    source: requireEnum(args, 'source', [
+      'explicit_user_statement',
+      'inference',
+      'repeated_pattern',
+      'test_or_setup',
+    ] as const),
+    confidence: requireEnum(args, 'confidence', ['high', 'medium', 'low'] as const),
+    evidence: requireString(args, 'evidence'),
+    sensitive: args.sensitive === true,
+    user_confirmed: args.user_confirmed === true,
+  };
 }
 
 function requireString(args: Record<string, unknown>, key: string): string {
@@ -102,4 +173,20 @@ function requireString(args: Record<string, unknown>, key: string): string {
 function optionalString(args: Record<string, unknown>, key: string): string | undefined {
   const v = args[key];
   return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined;
+}
+
+function requireNumber(args: Record<string, unknown>, key: string): number {
+  const v = Number(args[key]);
+  if (!Number.isFinite(v)) throw new Error(`missing required argument: ${key}`);
+  return v;
+}
+
+function requireEnum<T extends string>(
+  args: Record<string, unknown>,
+  key: string,
+  allowed: readonly T[]
+): T {
+  const v = args[key];
+  if (typeof v === 'string' && (allowed as readonly string[]).includes(v)) return v as T;
+  throw new Error(`argument ${key} must be one of: ${allowed.join(', ')}`);
 }

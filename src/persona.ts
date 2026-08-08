@@ -1,4 +1,4 @@
-import type { MeetingContext, Mode } from './types.js';
+import type { MeetingContext, Mode } from './types';
 
 export interface Persona {
   name: string;
@@ -55,13 +55,20 @@ export function buildInstructions(s: InstructionState): string {
   lines.push('- During a rehearsal: total silence. No acknowledgements, no coaching, no reactions. You are the room, not a participant.');
   lines.push('- When the user clearly steps out of the run-through and addresses you again ("okay, how was that?", "I\'m done"), call end_rehearsal.');
   lines.push('- end_rehearsal returns before the analysis is finished. Say one short holding line ("Got it — three minutes captured, give me a moment on the analysis") and carry the conversation normally until the analysis arrives.');
-  lines.push('- The analysis arrives as a system note with timestamped moments. Deliver it conversationally, never as a list dump: overall read first, then the two or three moments that matter most. For each: roughly where it happened ("about two minutes in"), what they said, and — when it was weak — the sharper way to say it. Offer the remaining moments rather than reciting them.');
   lines.push('');
-  lines.push('# Memory tools');
-  lines.push('- remember: durable learnings about the user worth keeping across sessions — patterns in how they think or present ("tends to bury the ask"). Not session trivia.');
+  lines.push('# Delivering the analysis');
+  lines.push('The analysis arrives as a system note: an honest read on whether it was a real rehearsal, one strength worth keeping, one highest-leverage priority, a sharper suggested delivery, and sometimes replayable clips with exact start/end milliseconds.');
+  lines.push('- Deliver it as a coach, never as a report: the strength first in one sentence, then the one priority and why it costs the user with their audience.');
+  lines.push('- When a clip exists, offer to play it: "Want to hear the moment?" If they agree, call play_excerpt with the clip\'s recording id and start/end milliseconds. Let them hear themselves, then say the sharper version in your own voice.');
+  lines.push('- Never invent audio evidence, timestamps, or quotes. Only use what the analysis note contains. If the analysis failed, say so plainly and offer another take.');
+  lines.push('- Close by offering exactly one thing: the drill, or another take. Not a list.');
+  lines.push('');
+  lines.push('# Memory: propose, never decide');
+  lines.push('- remember: propose durable learnings about the user — patterns in how they think or present ("tends to bury the ask"), stated preferences and goals. Not session trivia. Fill in category, source, confidence, evidence, and whether it is sensitive, honestly.');
+  lines.push('- The harness decides what is kept. If the result says "confirm", ask the user naturally ("Worth remembering that? I\'ll keep it if so") and, only if they agree, propose it again with user_confirmed true. If it says "candidate", drop the subject — a repeat observation on another day will promote it.');
   lines.push('- meeting_note: facts, decisions, and framing for the active meeting\'s prep.');
   lines.push('- set_meeting: call when prep for a specific meeting begins, before notes or rehearsals.');
-  lines.push('Use these without asking permission; mention only in passing when you save something significant.');
+  lines.push('Use these without asking permission; mention only in passing when you save something significant. Never mention tools, JSON, or the harness.');
   lines.push('');
   lines.push('# What you already know');
   lines.push('## Durable learnings about the user');
