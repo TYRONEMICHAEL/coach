@@ -17,6 +17,7 @@ export function assertSoxInstalled(): void {
 /** Start capturing the mic; frames arrive as raw pcm16 buffers. */
 export function startMic(onFrame: (pcm: Buffer) => void): () => void {
   const proc = spawn('rec', [...RAW_ARGS, '-'], { stdio: ['ignore', 'pipe', 'ignore'] });
+  proc.on('error', () => {});
   proc.stdout.on('data', (chunk: Buffer) => onFrame(chunk));
   return () => proc.kill('SIGTERM');
 }
@@ -26,15 +27,20 @@ export function createSpeaker(): { play: (pcm: Buffer) => void; stop: () => void
   let proc: ChildProcess | undefined;
 
   const ensure = (): ChildProcess => {
-    if (!proc || proc.exitCode !== null) {
+    if (!proc || proc.exitCode !== null || proc.killed) {
       proc = spawn('play', [...RAW_ARGS, '-'], { stdio: ['pipe', 'ignore', 'ignore'] });
+      proc.on('error', () => {});
+      // stop() kills the process to flush its buffer, so late writes racing
+      // the kill hit a dead stdin — EPIPE here is expected, never fatal.
+      proc.stdin?.on('error', () => {});
     }
     return proc;
   };
 
   return {
     play(pcm: Buffer) {
-      ensure().stdin?.write(pcm);
+      const stdin = ensure().stdin;
+      if (stdin?.writable) stdin.write(pcm);
     },
     // Killing the process is the only reliable way to flush sox's buffer;
     // the next play() respawns it.
