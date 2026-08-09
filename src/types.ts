@@ -108,6 +108,13 @@ export interface RehearsalPriority {
   drill: string;
 }
 
+/** Whether the previous take's one correction actually moved. */
+export interface TakeProgress {
+  verdict: 'improved' | 'same' | 'regressed' | 'not_comparable';
+  note: string;
+  evidence?: string;
+}
+
 /**
  * Rehearsal feedback, shaped by the product's coaching philosophy:
  * one strength worth keeping, one priority worth fixing, everything
@@ -115,6 +122,8 @@ export interface RehearsalPriority {
  */
 export interface RehearsalFeedback {
   assessment: TakeAssessment;
+  /** Present from take 2 onward: the read on last take's correction. */
+  progress?: TakeProgress;
   strength: string;
   strengthEvidence: string[];
   strengthClip?: EvidenceClip;

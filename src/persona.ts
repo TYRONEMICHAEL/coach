@@ -39,8 +39,11 @@ export interface InstructionState {
   persona: Persona;
   learnings: string[];
   meetingsOnFile: MeetingContext[];
+  /** Per-meeting one-line read of the last analyzed take — continuity. */
+  lastReads?: Array<{ title: string; summary: string }>;
   activeMeeting?: MeetingContext;
   activeMeetingNotes?: string[];
+  activeMeetingLastRead?: string;
   mode: Mode;
 }
 
@@ -103,10 +106,16 @@ export function buildInstructions(s: InstructionState): string {
       ? s.meetingsOnFile.map((m) => `- ${m.title}${m.when ? ` (${m.when})` : ''}`).join('\n')
       : '- (none yet)'
   );
+  if (s.lastReads?.length) {
+    lines.push('## Where each meeting left off');
+    for (const read of s.lastReads) lines.push(`- ${read.title}: ${read.summary}`);
+    lines.push('This is your continuity. Open from it, and when a rehearsal for one of these meetings begins, you are picking up that thread — say so in one line, never as a recap.');
+  }
   if (s.activeMeeting) {
     const m = s.activeMeeting;
     lines.push('## Active meeting');
     lines.push(`- ${m.title}${m.when ? ` (${m.when})` : ''}${m.goal ? ` — goal: ${m.goal}` : ''}`);
+    if (s.activeMeetingLastRead) lines.push(`Where we left off: ${s.activeMeetingLastRead}`);
     if (s.activeMeetingNotes?.length) {
       lines.push('Prep notes so far:');
       for (const n of s.activeMeetingNotes) lines.push(`- ${n}`);

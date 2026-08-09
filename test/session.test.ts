@@ -196,6 +196,21 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
   const replayLatest = await callTool(provider, 'c6', 'play_excerpt', { start_ms: 0, end_ms: 400 });
   assert.equal(replayLatest.output.played, true);
   assert.equal(player.calls.length, 2);
+
+  // Continuity: instructions now carry where the meeting left off…
+  assert.match(provider.instructionUpdates.at(-1)!, /Where each meeting left off/);
+  assert.match(provider.instructionUpdates.at(-1)!, /the ask arrived late and hedged/);
+  assert.ok(memory.lastRehearsalSummary('q3-board-review')?.includes('state the ask in the first minute'));
+
+  // …and take 2's analysis receives take 1's read to judge progress against.
+  await callTool(provider, 'c7', 'begin_rehearsal');
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND));
+  await callTool(provider, 'c8', 'end_rehearsal');
+  await session.settleAnalyses();
+  assert.equal(analyzer.requests.length, 2);
+  assert.equal(analyzer.requests[1]?.takeNumber, 2);
+  assert.match(String(analyzer.requests[1]?.previousSummary), /the ask arrived late and hedged/);
+  assert.equal(analyzer.requests[0]?.previousSummary, undefined);
 });
 
 test('coach audio plays in coaching mode and mutes during rehearsal', async () => {

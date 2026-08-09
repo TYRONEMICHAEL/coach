@@ -23,6 +23,8 @@ export class RelayAnalyzer implements RehearsalAnalyzer {
         durationMs: request.durationMs,
         meeting: request.meeting,
         learnings: request.learnings,
+        takeNumber: request.takeNumber,
+        previousSummary: request.previousSummary,
       }),
     });
     if (!response.ok) {

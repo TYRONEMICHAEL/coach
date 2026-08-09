@@ -1,11 +1,11 @@
-import { renderFeedbackMarkdown } from '../../../src/analysis/analyzer';
+import { renderFeedbackMarkdown, summarizeFeedback } from '../../../src/analysis/analyzer';
 import type { CoachMemory } from '../../../src/memory';
 import { formatDuration, slugify, today } from '../../../src/memory';
 import type { MeetingContext, RecordedTake, RehearsalFeedback, RehearsalTake } from '../../../src/types';
 
 export interface StoredMeeting extends MeetingContext {
   notes: string[];
-  rehearsals: Array<{ take: number; date: string; duration: string; markdown: string }>;
+  rehearsals: Array<{ take: number; date: string; duration: string; markdown: string; summary?: string }>;
 }
 
 interface Store {
@@ -133,8 +133,13 @@ export class LocalCoachMemory implements CoachMemory {
       date: today(),
       duration: formatDuration(take.seconds),
       markdown: renderFeedbackMarkdown(feedback),
+      summary: summarizeFeedback(feedback),
     });
     this.write(store);
+  }
+
+  lastRehearsalSummary(slug: string): string | undefined {
+    return this.read().meetings[slug]?.rehearsals.at(-1)?.summary;
   }
 
   /** Browser takes are session-only by design. */

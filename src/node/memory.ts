@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { renderFeedbackMarkdown } from '../analysis/analyzer';
+import { renderFeedbackMarkdown, summarizeFeedback } from '../analysis/analyzer';
 import type { CoachMemory } from '../memory';
 import { formatDuration, slugify, today } from '../memory';
 import type { MeetingContext, RecordedTake, RehearsalFeedback, RehearsalTake } from '../types';
@@ -142,10 +142,18 @@ export class FileCoachMemory implements CoachMemory {
       '',
       `### Take ${take.takeNumber} — ${today()}, ${formatDuration(take.seconds)}`,
       `recording: recordings/${take.id}.wav`,
+      `continuity: ${summarizeFeedback(feedback)}`,
       '',
       renderFeedbackMarkdown(feedback),
     ].join('\n');
     fs.writeFileSync(p, text.trimEnd() + '\n' + header + block + '\n');
+  }
+
+  lastRehearsalSummary(slug: string): string | undefined {
+    const p = this.meetingPath(slug);
+    if (!fs.existsSync(p)) return undefined;
+    const matches = fs.readFileSync(p, 'utf8').match(/^continuity: (.+)$/gm);
+    return matches?.at(-1)?.slice('continuity: '.length);
   }
 
   persistRecording(take: RecordedTake): string {

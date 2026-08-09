@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { formatFeedbackNote, mmss, parseFeedbackJson } from '../src/analysis/analyzer';
+import {
+  buildAnalysisPrompt,
+  formatFeedbackNote,
+  mmss,
+  parseFeedbackJson,
+  summarizeFeedback,
+} from '../src/analysis/analyzer';
 import type { RehearsalTake } from '../src/types';
 
 const wrapped = (payload: unknown) =>
@@ -109,6 +115,55 @@ test('the injected note carries the clip, replay instruction, and take id', () =
   assert.match(note, /no room around key points \(Pauses\)/);
   assert.match(note, /play_excerpt recording_id "q3-board-take-2" start_ms 61000 end_ms 66000/);
   assert.match(note, /Deliver this as a coach, not a report/);
+});
+
+test('continuity: the prompt carries the previous take, the schema carries progress', () => {
+  const prompt = buildAnalysisPrompt({
+    meeting: { slug: 'board', title: 'Board' },
+    learnings: [],
+    takeNumber: 2,
+    previousSummary: 'the priority was "the ask arrived late"; the correction: ask in the first minute',
+  });
+  assert.match(prompt, /This is take 2/);
+  assert.match(prompt, /the ask arrived late/);
+  assert.match(prompt, /report progress honestly/);
+  // A first take gets no continuity block.
+  assert.ok(!buildAnalysisPrompt({ meeting: { slug: 'b', title: 'B' }, learnings: [] }).includes('This is take'));
+
+  const fb = parseFeedbackJson(
+    JSON.stringify({
+      assessment: { kind: 'real rehearsal', confidence: 'high', reason: 'ok' },
+      progress: { verdict: 'improved', note: 'the ask arrived in the first minute this time', evidence: 'ask at 0:40' },
+      strength: 'clear open',
+      suggestedDelivery: '',
+    }),
+    60_000
+  );
+  assert.equal(fb.progress?.verdict, 'improved');
+  assert.equal(fb.progress?.evidence, 'ask at 0:40');
+  // Bad verdicts are dropped rather than trusted.
+  const bad = parseFeedbackJson(
+    JSON.stringify({
+      assessment: { kind: 'real rehearsal', confidence: 'high', reason: 'ok' },
+      progress: { verdict: 'spectacular', note: 'x' },
+      strength: 'clear open',
+      suggestedDelivery: '',
+    }),
+    60_000
+  );
+  assert.equal(bad.progress, undefined);
+
+  const summary = summarizeFeedback(fb);
+  assert.match(summary, /no coaching priority|the priority was/);
+  assert.match(summary, /strength to keep: clear open/);
+  assert.match(summary, /progress on the take before: improved/);
+
+  const note = formatFeedbackNote(
+    { meeting: { slug: 'board', title: 'Board' }, takeNumber: 2, id: 'board-take-2', seconds: 60 },
+    fb
+  );
+  assert.match(note, /Progress on last take's correction: improved/);
+  assert.match(note, /Deliver this first/);
 });
 
 test('a note without a priority tells the coach to invite a real take', () => {

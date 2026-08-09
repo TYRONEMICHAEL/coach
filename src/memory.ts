@@ -27,6 +27,9 @@ export interface CoachMemory {
 
   rehearsalCount(slug: string): number;
   addRehearsalFeedback(take: RehearsalTake, feedback: RehearsalFeedback): void;
+  /** Compact one-line read of the meeting's most recent analyzed take —
+   * what coaching continuity is built from. Undefined before any take. */
+  lastRehearsalSummary(slug: string): string | undefined;
 
   /**
    * Persist a finished take's audio where this platform keeps artifacts.

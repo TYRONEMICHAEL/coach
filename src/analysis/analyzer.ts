@@ -5,6 +5,7 @@ import type {
   RehearsalPriority,
   RehearsalTake,
   TakeAssessment,
+  TakeProgress,
 } from '../types';
 
 // Seam 2: rehearsal analysis. Takes the recorded WAV plus context, returns
@@ -18,6 +19,9 @@ export interface AnalyzeRequest {
   durationMs: number;
   meeting: MeetingContext;
   learnings: string[];
+  /** Continuity: which take this is and what the previous one was told. */
+  takeNumber?: number;
+  previousSummary?: string;
 }
 
 export interface RehearsalAnalyzer {
@@ -35,7 +39,9 @@ export function mmss(seconds: number): string {
  * waveform, not a transcript, and must return evidence the user can replay
  * — or nothing. One strength, one priority, never a report.
  */
-export function buildAnalysisPrompt(request: Pick<AnalyzeRequest, 'meeting' | 'learnings'>): string {
+export function buildAnalysisPrompt(
+  request: Pick<AnalyzeRequest, 'meeting' | 'learnings' | 'takeNumber' | 'previousSummary'>
+): string {
   const { meeting, learnings } = request;
   const lines: string[] = [
     'You are the listening specialist for a calm, exacting executive communication coach. You receive the complete audio of one rehearsal take: the user talking through material for an upcoming meeting. Only the user speaks in the recording.',
@@ -44,6 +50,13 @@ export function buildAnalysisPrompt(request: Pick<AnalyzeRequest, 'meeting' | 'l
   ];
   if (meeting.when) lines.push(`When: ${meeting.when}`);
   if (meeting.goal) lines.push(`What the user wants out of it: ${meeting.goal}`);
+  if (request.takeNumber && request.takeNumber > 1 && request.previousSummary) {
+    lines.push(
+      '',
+      `This is take ${request.takeNumber} for this meeting. The previous take's read was: ${request.previousSummary}`,
+      'Coaching compounds or it is worthless: listen specifically for whether the previous correction moved, and report progress honestly — improved, same, regressed, or not comparable (different material). Anchor the verdict in what you actually heard, never in encouragement.'
+    );
+  }
   if (learnings.length) {
     lines.push('', 'Known patterns about this user from previous coaching:');
     for (const l of learnings) lines.push(`- ${l}`);
@@ -63,6 +76,7 @@ export function buildAnalysisPrompt(request: Pick<AnalyzeRequest, 'meeting' | 'l
     'Respond with ONLY a JSON object, no prose and no code fences, in exactly this shape:',
     '{',
     '  "assessment": { "kind": "real rehearsal" | "warm-up" | "mic check" | "unclear", "confidence": "high" | "medium" | "low", "reason": "one grounded sentence" },',
+    '  "progress": { "verdict": "improved" | "same" | "regressed" | "not_comparable", "note": "one sentence on the previous correction", "evidence": "what you heard that proves it" } | null,',
     '  "strength": "specific behavior worth keeping",',
     '  "strengthEvidence": ["grounded moment"],',
     '  "strengthClip": { "startMs": 0, "endMs": 0, "label": "opening words of the clip" } | null,',
@@ -79,7 +93,7 @@ export function buildAnalysisPrompt(request: Pick<AnalyzeRequest, 'meeting' | 'l
     '  "audioAdvantage": "one observation possible only from audio, or an empty string"',
     '}',
     '',
-    'priority is null only when the take was not a real rehearsal.'
+    'priority is null only when the take was not a real rehearsal. progress is null on a first take or when there was no previous correction to compare against.'
   );
   return lines.join('\n');
 }
@@ -97,6 +111,7 @@ export function parseFeedbackJson(text: string, durationMs: number): RehearsalFe
   if (!strength) throw new Error('analysis response had no strength');
   return {
     assessment,
+    progress: parseProgress(raw.progress),
     strength,
     strengthEvidence: stringArray(raw.strengthEvidence),
     strengthClip: parseClip(raw.strengthClip, durationMs),
@@ -123,6 +138,22 @@ function parseAssessment(v: unknown): TakeAssessment {
       typeof raw.reason === 'string' && raw.reason.trim() !== ''
         ? raw.reason.trim()
         : 'The analyzer could not confidently classify the take.',
+  };
+}
+
+function parseProgress(v: unknown): TakeProgress | undefined {
+  if (typeof v !== 'object' || v === null) return undefined;
+  const raw = v as Record<string, unknown>;
+  const verdict = raw.verdict;
+  if (verdict !== 'improved' && verdict !== 'same' && verdict !== 'regressed' && verdict !== 'not_comparable')
+    return undefined;
+  const note = typeof raw.note === 'string' ? raw.note.trim() : '';
+  if (!note) return undefined;
+  return {
+    verdict,
+    note,
+    evidence:
+      typeof raw.evidence === 'string' && raw.evidence.trim() !== '' ? raw.evidence.trim() : undefined,
   };
 }
 
@@ -194,13 +225,33 @@ const clipLine = (clip: EvidenceClip | undefined, recordingId: string): string =
     ? ` [replayable: play_excerpt recording_id "${recordingId}" start_ms ${clip.startMs} end_ms ${clip.endMs} — "${clip.label}"]`
     : '';
 
+/** One line of continuity: what the next take's analysis compares against
+ * and what the coach opens with next session. */
+export function summarizeFeedback(fb: RehearsalFeedback): string {
+  const parts: string[] = [];
+  if (fb.priority) {
+    parts.push(`the priority was "${fb.priority.title}" (${fb.priority.dimension}); the correction: ${fb.priority.correction}`);
+  } else {
+    parts.push(`no coaching priority (${fb.assessment.kind})`);
+  }
+  parts.push(`the strength to keep: ${fb.strength}`);
+  if (fb.progress) parts.push(`progress on the take before: ${fb.progress.verdict}`);
+  return parts.join('; ');
+}
+
 /** Markdown block appended to the meeting record for one take. */
 export function renderFeedbackMarkdown(fb: RehearsalFeedback): string {
   const lines: string[] = [
     `_${fb.assessment.kind} (${fb.assessment.confidence}): ${fb.assessment.reason}_`,
     '',
-    `**Strength** — ${fb.strength}`,
   ];
+  if (fb.progress) {
+    lines.push(
+      `**Progress** — ${fb.progress.verdict}: ${fb.progress.note}${fb.progress.evidence ? ` (${fb.progress.evidence})` : ''}`,
+      ''
+    );
+  }
+  lines.push(`**Strength** — ${fb.strength}`);
   for (const e of fb.strengthEvidence) lines.push(`- ${e}`);
   if (fb.strengthClip)
     lines.push(`- clip ${mmss(fb.strengthClip.startMs / 1000)}–${mmss(fb.strengthClip.endMs / 1000)}: "${fb.strengthClip.label}"`);
@@ -223,8 +274,15 @@ export function formatFeedbackNote(take: RehearsalTake, fb: RehearsalFeedback): 
   const lines: string[] = [
     `Rehearsal analysis ready — "${take.meeting.title}", take ${take.takeNumber}, ${mmss(take.seconds)} long.`,
     `Assessment: ${fb.assessment.kind} (${fb.assessment.confidence} confidence) — ${fb.assessment.reason}`,
-    `Strength: ${fb.strength}${fb.strengthEvidence.length ? ` (${fb.strengthEvidence.join('; ')})` : ''}${clipLine(fb.strengthClip, take.id)}`,
   ];
+  if (fb.progress) {
+    lines.push(
+      `Progress on last take's correction: ${fb.progress.verdict} — ${fb.progress.note}${fb.progress.evidence ? ` Evidence: ${fb.progress.evidence}` : ''} Deliver this first: progress named honestly is what makes the coaching real.`
+    );
+  }
+  lines.push(
+    `Strength: ${fb.strength}${fb.strengthEvidence.length ? ` (${fb.strengthEvidence.join('; ')})` : ''}${clipLine(fb.strengthClip, take.id)}`
+  );
   if (fb.priority) {
     lines.push(
       `Priority — ${fb.priority.title} (${fb.priority.dimension}). ${fb.priority.whyItMatters}${fb.priority.evidence.length ? ` Evidence: ${fb.priority.evidence.join('; ')}` : ''}${clipLine(fb.priority.clip, take.id)}`,

@@ -3,7 +3,9 @@ import * as http from 'node:http';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { OpenRouterAnalyzer } from '../src/analysis/openrouter';
+import type { AnalyzeRequest } from '../src/analysis/analyzer';
 import type { MeetingContext } from '../src/types';
+import { runAbExperiment } from './ab';
 
 /**
  * The web body's relay: a zero-dependency node:http server that keeps both
@@ -24,6 +26,10 @@ const REALTIME_MODEL = process.env.COACH_MODEL ?? 'gpt-realtime';
 const VOICE = process.env.COACH_VOICE ?? 'marin';
 // Same evidence-based default as src/config.ts: the specialist listener.
 const ANALYZER_MODEL = process.env.COACH_ANALYZER_MODEL ?? 'thinkingmachines/inkling-small';
+/** The transcript-vs-audio experiment: on unless COACH_AB=0. Bundles land
+ * in data/ab/ on this machine only. */
+const AB_ENABLED = process.env.COACH_AB !== '0';
+const DATA_DIR = process.env.COACH_DATA_DIR ?? path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'data');
 const DIST = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dist');
 /** 12 minutes of 24k mono pcm16 as base64 is ~46 MB; leave headroom. */
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -119,7 +125,14 @@ async function analyze(req: http.IncomingMessage, res: http.ServerResponse): Pro
     });
     return;
   }
-  let parsed: { wavBase64?: string; durationMs?: number; meeting?: MeetingContext; learnings?: string[] };
+  let parsed: {
+    wavBase64?: string;
+    durationMs?: number;
+    meeting?: MeetingContext;
+    learnings?: string[];
+    takeNumber?: number;
+    previousSummary?: string;
+  };
   try {
     parsed = JSON.parse((await readBody(req)).toString('utf8'));
   } catch {
@@ -130,15 +143,36 @@ async function analyze(req: http.IncomingMessage, res: http.ServerResponse): Pro
     json(res, 400, { error: 'analyze needs wavBase64, durationMs, and meeting.' });
     return;
   }
+  const request: AnalyzeRequest = {
+    wav: new Uint8Array(Buffer.from(parsed.wavBase64, 'base64')),
+    durationMs: Number(parsed.durationMs),
+    meeting: parsed.meeting,
+    learnings: Array.isArray(parsed.learnings) ? parsed.learnings : [],
+    takeNumber: Number.isFinite(parsed.takeNumber) ? Number(parsed.takeNumber) : undefined,
+    previousSummary: typeof parsed.previousSummary === 'string' ? parsed.previousSummary : undefined,
+  };
   const analyzer = new OpenRouterAnalyzer({ apiKey: OPENROUTER_KEY, model: ANALYZER_MODEL });
   try {
-    const feedback = await analyzer.analyze({
-      wav: new Uint8Array(Buffer.from(parsed.wavBase64, 'base64')),
-      durationMs: Number(parsed.durationMs),
-      meeting: parsed.meeting,
-      learnings: Array.isArray(parsed.learnings) ? parsed.learnings : [],
-    });
+    const feedback = await analyzer.analyze(request);
     json(res, 200, feedback);
+    // The experiment runs after the user already has their feedback — it can
+    // never slow a session down, and its failure is only a log line.
+    if (AB_ENABLED && OPENAI_KEY) {
+      runAbExperiment(
+        {
+          openaiKey: OPENAI_KEY,
+          openrouterKey: OPENROUTER_KEY,
+          dataDir: DATA_DIR,
+          textModel: process.env.COACH_AB_TEXT_MODEL,
+          judgeModel: process.env.COACH_AB_JUDGE_MODEL,
+        },
+        { request, audioFeedback: feedback, audioModel: ANALYZER_MODEL }
+      )
+        .then((dir) => console.log(`ab bundle: ${dir}`))
+        .catch((err: unknown) =>
+          console.error('ab experiment failed:', err instanceof Error ? err.message : err)
+        );
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('analyze failed:', message);

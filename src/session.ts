@@ -299,9 +299,15 @@ export class CoachSession {
         durationMs: Math.round(recorded.seconds * 1000),
         meeting: take.meeting,
         learnings: this.memory.learnings(),
+        takeNumber: take.takeNumber,
+        // Read before this take's feedback lands: the previous take's read.
+        previousSummary: this.memory.lastRehearsalSummary(take.meeting.slug),
       })
       .then((feedback) => {
         this.memory.addRehearsalFeedback(take, feedback);
+        // Continuity lands immediately: "where we left off" is true within
+        // the same session, not just the next one.
+        this.refreshInstructions();
         this.provider.injectSystemNote(formatFeedbackNote(take, feedback), { startResponse: true });
         this.setCapture('idle');
         this.status(`analysis ready for take ${take.takeNumber}`);
@@ -333,13 +339,20 @@ export class CoachSession {
   }
 
   private instructions(): string {
+    const meetingsOnFile = this.memory.meetings();
     return buildInstructions({
       persona: this.persona,
       learnings: this.memory.learnings(),
-      meetingsOnFile: this.memory.meetings(),
+      meetingsOnFile,
+      lastReads: meetingsOnFile
+        .map((m) => ({ title: m.title, summary: this.memory.lastRehearsalSummary(m.slug) }))
+        .filter((entry): entry is { title: string; summary: string } => Boolean(entry.summary)),
       activeMeeting: this.activeMeeting,
       activeMeetingNotes: this.activeMeeting
         ? this.memory.meetingNotes(this.activeMeeting.slug)
+        : undefined,
+      activeMeetingLastRead: this.activeMeeting
+        ? this.memory.lastRehearsalSummary(this.activeMeeting.slug)
         : undefined,
       mode: this.mode,
     });
