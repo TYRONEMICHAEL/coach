@@ -1,16 +1,19 @@
 import { useMemo, useState } from 'react';
 import type { StoredMeeting } from './adapters/local-memory';
+import WaveLine from './WaveLine';
 import type { Presence } from './useCoach';
 import { COACH_NAME, DEBUG_MODE, MOCK_MODE, memory, useCoach } from './useCoach';
 
+const NAME = COACH_NAME.replace(' (demo)', '');
+
 const stateCopy: Record<Presence, string> = {
-  idle: 'Ready when you are',
-  connecting: 'Joining you…',
-  listening: 'Listening',
-  speaking: COACH_NAME.replace(' (demo)', ''),
-  recording: 'The room is yours.',
-  thinking: 'Listening back…',
-  error: 'Couldn’t join',
+  idle: 'ready when you are',
+  connecting: 'joining you…',
+  listening: 'listening',
+  speaking: `${NAME} is speaking`,
+  recording: 'the room is yours',
+  thinking: 'listening back…',
+  error: 'couldn’t join',
 };
 
 function formatElapsed(seconds: number): string {
@@ -26,111 +29,92 @@ export default function App() {
 
   const snapshot = useMemo(() => memory.snapshot(), [coach.memoryVersion, reviewOpen]);
   const active = coach.phase === 'live';
+  const lastCoachLine = [...coach.transcript].reverse().find((line) => line.role === 'coach');
+
+  const status = coach.replaying
+    ? 'your take — listen'
+    : coach.muted
+      ? 'microphone muted'
+      : coach.capture === 'finalizing'
+        ? 'keeping that take…'
+        : coach.presence === 'thinking' && coach.progressMessage
+          ? coach.progressMessage.toLowerCase()
+          : stateCopy[coach.presence];
 
   return (
     <main className={`coachShell${coach.capture === 'recording' ? ' coachShell--rehearsal' : ''}`}>
       <audio ref={coach.remoteAudioRef} autoPlay playsInline className="hiddenAudio" />
       <audio ref={coach.clipAudioRef} playsInline preload="metadata" className="hiddenAudio" />
 
-      <header className="coachHeader">
-        <div>
-          <span className="wordmark">COACH</span>
-          <span className="prototypeTag">{MOCK_MODE ? 'DEMO — NO KEYS' : 'ONE BRAIN · WEB BODY'}</span>
-        </div>
-        <div className="headerActions">
+      <header className="topBar">
+        <span className="wordmark">{MOCK_MODE ? 'COACH · DEMO' : 'COACH'}</span>
+        <div className="topActions">
           {!MOCK_MODE && coach.serverStatus && !(coach.serverStatus.openai && coach.serverStatus.openrouter) && (
-            <span className="statusPill warn">
-              {coach.serverStatus.openai ? 'Voice only — no analyzer key' : 'Relay keys missing'}
+            <span className="warnPill">
+              {coach.serverStatus.openai ? 'no analyzer key' : 'relay keys missing'}
             </span>
           )}
-          <button
-            className="reviewButton"
-            type="button"
-            onClick={() => setReviewOpen(true)}
-          >
+          <button className="reviewLink" type="button" onClick={() => setReviewOpen(true)}>
             Review
           </button>
         </div>
       </header>
 
-      <section className="coachStage" aria-live="polite">
-        <p className="eyebrow">YOUR SPEAKING COACH</p>
-        <h1>{COACH_NAME.replace(' (demo)', '')}</h1>
-        <div ref={coach.presenceRef} className={`presence presence--${coach.presence}`} aria-hidden="true">
-          <i />
-          <i />
-          <i />
-        </div>
-        <p className="coachStatus">
-          {coach.replaying
-            ? 'Your take — listen.'
-            : coach.muted
-              ? 'Microphone muted'
-              : coach.capture === 'finalizing'
-                ? 'Keeping that take…'
-                : coach.presence === 'thinking' && coach.progressMessage
-                  ? coach.progressMessage
-                  : stateCopy[coach.presence]}
+      <section className="stage" aria-live="polite">
+        <h1 className="coachName">{NAME}</h1>
+
+        <WaveLine state={coach.presence} replaying={coach.replaying} />
+
+        <p className="coachSays">
+          {lastCoachLine && coach.capture !== 'recording' ? lastCoachLine.text : ' '}
         </p>
-        {coach.capture === 'recording' && <p className="takeTimer">{formatElapsed(coach.elapsed)}</p>}
-        {coach.phase === 'idle' && (
-          <p className="coachPrompt">
-            Talk through a meeting. Rehearse a take. Hear the exact moment that needs work — then say it better.
-          </p>
-        )}
-        {coach.error && <p className="coachError">{coach.error}</p>}
+
+        <p className="statusLine">
+          {status}
+          {coach.capture === 'recording' && <span className="takeTimer"> · {formatElapsed(coach.elapsed)}</span>}
+        </p>
+
+        {coach.error && <p className="errorLine">{coach.error}</p>}
 
         {coach.tapPending && (
-          <div className="excerptFallback" role="status">
-            <p>The browser needs one tap before it can replay your take.</p>
+          <p className="tapLine" role="status">
+            one tap to hear it —{' '}
             <button type="button" onClick={coach.playPendingExcerpt}>
-              Play excerpt
+              play
             </button>
-          </div>
-        )}
-
-        {coach.transcript.length > 0 && coach.capture !== 'recording' && (
-          <div className="transcriptPeek">
-            {coach.transcript.slice(-2).map((line, index, shown) => (
-              <p
-                key={`${line.text}-${index}`}
-                className={`${line.role === 'coach' ? 'coachLine' : 'userLine'}${index < shown.length - 1 ? ' pastLine' : ''}`}
-              >
-                {line.role === 'user' && <span>You</span>}
-                {line.text}
-              </p>
-            ))}
-          </div>
+          </p>
         )}
 
         {!active ? (
-          <button className="beginButton" type="button" onClick={() => void coach.begin()}>
-            {coach.phase === 'error' ? 'Try again' : 'Begin'}
-          </button>
+          <div className="controls">
+            <button className="textButton primary" type="button" onClick={() => void coach.begin()}>
+              {coach.phase === 'error' ? 'Try again' : 'Begin'}
+            </button>
+          </div>
         ) : (
-          <div className="liveControls">
-            <button type="button" onClick={coach.toggleMute} aria-pressed={coach.muted}>
-              {coach.muted ? 'Unmute' : 'Mute'}
+          <div className="controls">
+            <button className="textButton" type="button" onClick={coach.toggleMute} aria-pressed={coach.muted}>
+              {coach.muted ? 'unmute' : 'mute'}
             </button>
             {coach.capture === 'idle' && coach.mode === 'coaching' && (
-              <button type="button" className="startButton" onClick={coach.startTake}>
-                Start a take
+              <button className="textButton accent" type="button" onClick={coach.startTake}>
+                start a take
               </button>
             )}
             {coach.capture === 'recording' && (
-              <button type="button" className="doneButton" onClick={coach.finishTake}>
+              <button className="textButton accent" type="button" onClick={coach.finishTake}>
                 I’m done
               </button>
             )}
-            <button type="button" className="endButton" onClick={() => void coach.end()}>
-              End
+            <button className="textButton" type="button" onClick={() => void coach.end()}>
+              end
             </button>
           </div>
         )}
 
         <p className="privacyLine">
-          Takes stay in this tab and are sent once, only to be analyzed. Meeting notes and deliberately kept
-          memories live on this device — the coach proposes, the harness decides.
+          Takes stay in this tab and are sent once, only to be analyzed. Notes and kept memories live on this
+          device — the coach proposes, the harness decides.
         </p>
       </section>
 
@@ -150,7 +134,7 @@ export default function App() {
           <aside className="reviewDrawer" onClick={(event) => event.stopPropagation()}>
             <div className="reviewTop">
               <div>
-                <p className="eyebrow">WHAT {COACH_NAME.replace(' (demo)', '').toUpperCase()} HOLDS</p>
+                <p className="eyebrow">WHAT {NAME.toUpperCase()} HOLDS</p>
                 <h2>Your notebook</h2>
               </div>
               <button type="button" onClick={() => setReviewOpen(false)} aria-label="Close review">
@@ -253,7 +237,7 @@ function DemoPanel({ coach }: { coach: ReturnType<typeof useCoach> }) {
         <button
           type="button"
           disabled={!live}
-          onClick={() => provider?.coachSays('Welcome back. What are you preparing for today?')}
+          onClick={() => provider?.coachSays('Good to have you back. What are you working on?')}
         >
           Coach greets
         </button>

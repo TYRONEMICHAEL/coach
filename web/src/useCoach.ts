@@ -8,6 +8,7 @@ import { MediaRecorderTake } from './adapters/media-recorder';
 import { MockAnalyzer, ScriptedProvider, SyntheticTakeRecorder } from './adapters/mock';
 import { RelayAnalyzer } from './adapters/relay-analyzer';
 import { WebRTCRealtimeProvider } from './adapters/webrtc-provider';
+import { levels, resetLevels } from './levels';
 
 export type Presence = 'idle' | 'connecting' | 'listening' | 'speaking' | 'recording' | 'thinking' | 'error';
 
@@ -75,7 +76,6 @@ export function useCoach() {
   const playerRef = useRef<BrowserClipPlayer | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const clipAudioRef = useRef<HTMLAudioElement | null>(null);
-  const presenceRef = useRef<HTMLDivElement | null>(null);
   const levelsRef = useRef<LevelEngine | null>(null);
   const takeTimerRef = useRef<number | null>(null);
   const speakingDropRef = useRef<number | null>(null);
@@ -159,11 +159,7 @@ export function useCoach() {
           }
         }
         void ctx.suspend().catch(() => undefined);
-        const el = presenceRef.current;
-        if (el) {
-          el.style.setProperty('--mic', '0');
-          el.style.setProperty('--voice', '0');
-        }
+        resetLevels();
       },
     };
     const loop = () => {
@@ -180,14 +176,11 @@ export function useCoach() {
           }
         }
       }
-      // Fast attack, slow decay — the orb catches consonants, settles softly.
+      // Fast attack, slow decay — the line catches consonants, settles softly.
       mic = Math.max(rms(micAnalyser, micData), mic * 0.88);
       voice = Math.max(rms(voiceAnalyser, voiceData), voice * 0.88);
-      const el = presenceRef.current;
-      if (el) {
-        el.style.setProperty('--mic', Math.min(1, mic * 5).toFixed(3));
-        el.style.setProperty('--voice', Math.min(1, voice * 5).toFixed(3));
-      }
+      levels.mic = Math.min(1, mic * 5);
+      levels.voice = Math.min(1, voice * 5);
       engine.raf = requestAnimationFrame(loop);
     };
     engine.raf = requestAnimationFrame(loop);
@@ -259,9 +252,16 @@ export function useCoach() {
 
       let stream: MediaStream | null = null;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        const request = navigator.mediaDevices.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true },
         });
+        // Demo mode never waits on a mic: three seconds, then synthetic.
+        stream = MOCK_MODE
+          ? await Promise.race([
+              request.catch(() => null),
+              new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 3_000)),
+            ])
+          : await request;
       } catch {
         if (!MOCK_MODE) throw new Error('The coach needs the microphone. Allow mic access and try again.');
       }
@@ -424,7 +424,6 @@ export function useCoach() {
       : null,
     remoteAudioRef,
     clipAudioRef,
-    presenceRef,
     begin,
     end,
     toggleMute,
