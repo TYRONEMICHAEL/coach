@@ -33,12 +33,9 @@ export const memory = new LocalCoachMemory();
 const GREETING =
   'The user just opened the app and can hear you. Open per "How you open" — one or two sentences in your own voice, then stop and listen.';
 
-// One AudioContext for the page's lifetime. createMediaElementSource can
-// only ever be called once per element, and closing a context strands the
-// element — so the graph persists and is suspended between sessions.
+// One AudioContext for the page's lifetime, suspended between sessions.
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 let sharedCtx: AudioContext | null = null;
-const elementSources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
 
 function getSharedCtx(): AudioContext | null {
   if (sharedCtx) return sharedCtx;
@@ -132,23 +129,10 @@ export function useCoach() {
         // no mic level — the orb still breathes on its own
       }
     }
-    // The clip element joins the graph once, forever: replaying the user's
-    // take animates the orb exactly like a live voice.
-    const clipElement = clipAudioRef.current;
-    if (clipElement) {
-      try {
-        let clipSource = elementSources.get(clipElement);
-        if (!clipSource) {
-          clipSource = ctx.createMediaElementSource(clipElement);
-          clipSource.connect(ctx.destination);
-          elementSources.set(clipElement, clipSource);
-        }
-        clipSource.connect(voiceAnalyser);
-        sessionNodes.push(clipSource);
-      } catch {
-        // replay still audible through the element's default path
-      }
-    }
+    // Deliberately NOT wiring the clip element into this graph: on iOS a
+    // media element routed through Web Audio can stall mid-playback, which
+    // froze replay and ate the mic. The orb sits quiet during replay; the
+    // status line carries that moment instead.
     let voiceConnected = false;
     const micData = new Uint8Array(micAnalyser.fftSize);
     const voiceData = new Uint8Array(voiceAnalyser.fftSize);
@@ -169,8 +153,7 @@ export function useCoach() {
         cancelAnimationFrame(engine.raf);
         for (const node of sessionNodes) {
           try {
-            if (node instanceof MediaElementAudioSourceNode) node.disconnect(voiceAnalyser);
-            else node.disconnect();
+            node.disconnect();
           } catch {
             // already disconnected
           }
@@ -399,6 +382,10 @@ export function useCoach() {
     sessionRef.current?.endRehearsalManually();
   }, []);
 
+  const startTake = useCallback(() => {
+    sessionRef.current?.beginRehearsalManually();
+  }, []);
+
   const playPendingExcerpt = useCallback(() => {
     // Nothing may run before the retry: Safari must see play() inside the tap.
     const retry = tapRetry;
@@ -441,6 +428,7 @@ export function useCoach() {
     begin,
     end,
     toggleMute,
+    startTake,
     finishTake,
     playPendingExcerpt,
   };

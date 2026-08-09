@@ -62,6 +62,7 @@ function makeSession() {
     memory,
     recorder: new PcmTakeRecorder(),
     player,
+    beginCooldownMs: 0,
     playAudio: (pcm) => played.push(pcm),
     onStatus: (line) => statuses.push(line),
     onModeChange: (mode) => modes.push(mode),
@@ -137,7 +138,7 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
   assert.deepEqual(modes, ['rehearsal']);
 
   // During the rehearsal: mic frames are teed, coach audio is muted.
-  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND).fill(2)); // 1s
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 2).fill(2)); // 2s
   session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND / 2).fill(3)); // 0.5s
   provider.emit({ type: 'audio', pcm: new Uint8Array(10) });
   assert.equal(played.length, 0);
@@ -158,8 +159,8 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
   // The analyzer got the take plus context.
   assert.equal(analyzer.requests.length, 1);
   assert.equal(analyzer.requests[0]?.meeting.slug, 'q3-board-review');
-  assert.equal(analyzer.requests[0]?.durationMs, 1500);
-  assert.equal(analyzer.requests[0]?.wav.length, 44 + BYTES_PER_SECOND * 1.5); // header + only rehearsal frames
+  assert.equal(analyzer.requests[0]?.durationMs, 2500);
+  assert.equal(analyzer.requests[0]?.wav.length, 44 + BYTES_PER_SECOND * 2.5); // header + only rehearsal frames
 
   // The recording landed on disk.
   const wavPath = path.join(memory.dataDir, 'recordings', 'q3-board-review-take-1.wav');
@@ -180,7 +181,7 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
     'utf8'
   );
   assert.match(meetingFile, /## Rehearsals/);
-  assert.match(meetingFile, /### Take 1 — \d{4}-\d{2}-\d{2}, 0m02s/);
+  assert.match(meetingFile, /### Take 1 — \d{4}-\d{2}-\d{2}, 0m0\ds/);
   assert.match(meetingFile, /correction: state the ask in the first minute/);
 
   // The model replays the cited moment; end is clamped to the take length.
@@ -190,7 +191,7 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
     end_ms: 99_000,
   });
   assert.equal(replay.output.played, true);
-  assert.deepEqual(player.calls, [{ id: 'q3-board-review-take-1', startMs: 1000, endMs: 1500 }]);
+  assert.deepEqual(player.calls, [{ id: 'q3-board-review-take-1', startMs: 1000, endMs: 2500 }]);
 
   // Omitting the id replays the latest take.
   const replayLatest = await callTool(provider, 'c6', 'play_excerpt', { start_ms: 0, end_ms: 400 });
@@ -198,7 +199,7 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
   assert.equal(player.calls.length, 2);
 
   // A model passing seconds instead of milliseconds gets rescaled, not a
-  // sliver: end 1.2 on a 1.5s take means 200–1200ms, not 0.2–1.2ms.
+  // sliver: end 1.2 on a 2.5s take means 200–1200ms, not 0.2–1.2ms.
   await callTool(provider, 'c6b', 'play_excerpt', { start_ms: 0.2, end_ms: 1.2 });
   assert.deepEqual(player.calls.at(-1), { id: 'q3-board-review-take-1', startMs: 200, endMs: 1200 });
 
@@ -209,7 +210,7 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
 
   // …and take 2's analysis receives take 1's read to judge progress against.
   await callTool(provider, 'c7', 'begin_rehearsal');
-  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND));
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 3));
   await callTool(provider, 'c8', 'end_rehearsal');
   await session.settleAnalyses();
   assert.equal(analyzer.requests.length, 2);
@@ -310,7 +311,7 @@ test('a failed analysis is reported into the conversation, recording kept', asyn
   await session.start();
   await callTool(provider, 'c1', 'set_meeting', { title: 'Pitch' });
   await callTool(provider, 'c2', 'begin_rehearsal');
-  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND));
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 3));
   await callTool(provider, 'c3', 'end_rehearsal');
   await session.settleAnalyses();
 
@@ -331,13 +332,56 @@ test('manual end works when the model misses the handoff', async () => {
 
   await callTool(provider, 'c1', 'set_meeting', { title: 'Town hall' });
   await callTool(provider, 'c2', 'begin_rehearsal');
-  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND));
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 3));
   session.endRehearsalManually();
   await tick();
   assert.equal(session.mode, 'coaching');
   const note = provider.systemNotes.find((n) => n.text.includes('manually ended'));
   assert.ok(note);
   await session.settleAnalyses();
+});
+
+test('boundary misfires: fragments are discarded, hasty begins refused, manual start bypasses', async () => {
+  const provider = new MockRealtimeProvider();
+  const analyzer = new FakeAnalyzer();
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'coach-junk-'));
+  const captures: string[] = [];
+  const session = new CoachSession({
+    provider,
+    analyzer,
+    memory: new FileCoachMemory(dataDir),
+    recorder: new PcmTakeRecorder(),
+    onCaptureChange: (state) => captures.push(state),
+  });
+  await session.start();
+  await callTool(provider, 'c1', 'set_meeting', { title: 'Steering committee' });
+
+  // A 1-second scrap (the announcement, a flap) is never analyzed.
+  await callTool(provider, 'c2', 'begin_rehearsal');
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND));
+  const ended = await callTool(provider, 'c3', 'end_rehearsal');
+  assert.equal(ended.output.status, 'discarded');
+  assert.match(String(ended.output.note), /discarded and not analyzed/);
+  assert.equal(analyzer.requests.length, 0);
+  assert.deepEqual(captures, ['recording', 'finalizing', 'idle']);
+  assert.ok(!fs.existsSync(path.join(dataDir, 'recordings', 'steering-committee-take-1.wav')));
+
+  // Seconds after a take ends, a model begin is a misfire — refused.
+  const hasty = await callTool(provider, 'c4', 'begin_rehearsal');
+  assert.match(String(hasty.output.error), /ended moments ago/);
+  assert.equal(session.mode, 'coaching');
+
+  // The user's own start button is ground truth and bypasses the cooldown.
+  session.beginRehearsalManually();
+  await tick();
+  assert.equal(session.mode, 'rehearsal');
+  const startNote = provider.systemNotes.find((n) => n.text.includes('manually started'));
+  assert.ok(startNote);
+  assert.equal(startNote.startResponse, false);
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 3));
+  await callTool(provider, 'c5', 'end_rehearsal');
+  await session.settleAnalyses();
+  assert.equal(analyzer.requests.length, 1);
 });
 
 test('begin_rehearsal cuts any in-flight coach speech cleanly', async () => {

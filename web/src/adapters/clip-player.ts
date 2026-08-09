@@ -167,18 +167,20 @@ export class BrowserClipPlayer implements ExcerptPlayer {
     this.opts.duck(true);
     try {
       await new Promise<void>((resolve) => {
+        // iOS can stall the element's clock mid-playback; without a hard
+        // cap this wait never ends and the mic never comes back. The
+        // excerpt's own length plus headroom is the longest it can take.
+        const watchdog = window.setTimeout(() => finish(), endMs - startMs + 3_000);
         const timer = window.setInterval(() => {
-          if (audio.ended || audio.currentTime * 1000 >= endMs) {
-            window.clearInterval(timer);
-            audio.pause();
-            resolve();
-          }
+          if (audio.ended || audio.paused || audio.currentTime * 1000 >= endMs) finish();
         }, 50);
-        this.stopCurrent = () => {
+        const finish = () => {
           window.clearInterval(timer);
+          window.clearTimeout(watchdog);
           audio.pause();
           resolve();
         };
+        this.stopCurrent = finish;
       });
     } finally {
       this.stopCurrent = undefined;

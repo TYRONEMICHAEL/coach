@@ -31,6 +31,9 @@ export interface CoachSessionOptions {
   /** Injected once after connect (startResponse) so the coach speaks first,
    * in character, using what memory already holds. */
   greeting?: string;
+  /** How long after a take ends before the MODEL may begin another
+   * (misfire guard). The user's manual start always bypasses. */
+  beginCooldownMs?: number;
   playAudio?: (pcm: Uint8Array) => void;
   stopAudio?: () => void;
   onTranscript?: (role: 'user' | 'coach', text: string) => void;
@@ -65,6 +68,7 @@ export class CoachSession {
   private currentTake?: Omit<RehearsalTake, 'seconds'>;
   private readonly takes = new Map<string, RecordedTake>();
   private lastTakeId?: string;
+  private lastTakeEndedAt = 0;
   private pendingAnalyses: Promise<void>[] = [];
   private readonly opts: CoachSessionOptions;
 
@@ -117,11 +121,33 @@ export class CoachSession {
         this.status(result.error);
         return;
       }
+      if (result.status === 'discarded') return;
       this.provider.injectSystemNote(
         `The user manually ended the rehearsal (${String(result.seconds)}s captured); the analysis is running and will arrive as a system note. Acknowledge briefly.`,
         { startResponse: true }
       );
     });
+  }
+
+  /** The user's own start button: take boundaries belong to the human when
+   * they want them. Bypasses the post-take cooldown — a person pressing
+   * start IS the ground truth the cooldown approximates. */
+  beginRehearsalManually(): void {
+    if (this.mode === 'rehearsal') return;
+    this.opts.stopAudio?.();
+    this.provider.interrupt();
+    const result = this.beginRehearsal({ manual: true });
+    if (typeof result.error === 'string') {
+      this.provider.injectSystemNote(
+        `The user pressed "Start a take" but it could not begin: ${result.error}. Resolve this in one short question.`,
+        { startResponse: true }
+      );
+      return;
+    }
+    this.provider.injectSystemNote(
+      'The user manually started a rehearsal take; recording is running now. Total silence until they step out or press done.',
+      { startResponse: false }
+    );
   }
 
   /** Resolves when all dispatched analyses have settled (tests, shutdown). */
@@ -223,8 +249,17 @@ export class CoachSession {
     return { action: decision.action, reason: decision.reason, statement: proposal.statement };
   }
 
-  private beginRehearsal(): CapabilityResult {
+  private beginRehearsal(opts?: { manual?: boolean }): CapabilityResult {
     if (this.mode === 'rehearsal') return { error: 'a rehearsal is already running' };
+    // A take that just ended is usually followed by conversation, not a new
+    // take — a begin call seconds later is almost always a misfire. The
+    // user's own start button bypasses this.
+    if (!opts?.manual && Date.now() - this.lastTakeEndedAt < (this.opts.beginCooldownMs ?? 5_000)) {
+      return {
+        error:
+          'a take ended moments ago — do not begin another unless the user has clearly started presenting again; never call begin_rehearsal to recover from confusion',
+      };
+    }
     if (!this.activeMeeting)
       return {
         error:
@@ -261,9 +296,22 @@ export class CoachSession {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.setCapture('idle');
+      this.lastTakeEndedAt = Date.now();
       this.status(`take capture failed: ${message}`);
       return {
         error: `The recording could not be finalized (${message}). Tell the user plainly and offer another take.`,
+      };
+    }
+    this.lastTakeEndedAt = Date.now();
+    // A sub-2-second "take" is a boundary misfire, not a rehearsal — never
+    // analyze it, never let it become the take the user is judged on.
+    if (recorded.seconds < 2) {
+      this.setCapture('idle');
+      this.status(`discarded a ${recorded.seconds.toFixed(1)}s fragment — not a real take`);
+      return {
+        status: 'discarded',
+        seconds: Math.round(recorded.seconds * 10) / 10,
+        note: 'The recording was under two seconds — a boundary mistake, not a take. It was discarded and not analyzed. Do not start another recording unless the user clearly begins presenting; if unsure, ask.',
       };
     }
     recorded.ref = this.memory.persistRecording(recorded);

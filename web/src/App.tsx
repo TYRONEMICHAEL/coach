@@ -112,6 +112,11 @@ export default function App() {
             <button type="button" onClick={coach.toggleMute} aria-pressed={coach.muted}>
               {coach.muted ? 'Unmute' : 'Mute'}
             </button>
+            {coach.capture === 'idle' && coach.mode === 'coaching' && (
+              <button type="button" className="startButton" onClick={coach.startTake}>
+                Start a take
+              </button>
+            )}
             {coach.capture === 'recording' && (
               <button type="button" className="doneButton" onClick={coach.finishTake}>
                 I’m done
