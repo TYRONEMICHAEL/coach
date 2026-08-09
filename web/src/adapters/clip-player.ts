@@ -1,4 +1,6 @@
+import { pcm16ToWav } from '../../../src/recorder';
 import type { ExcerptPlayer, ExcerptResult, RecordedTake } from '../../../src/types';
+import { SAMPLE_RATE } from '../../../src/types';
 
 export interface ClipPlayerOptions {
   element: HTMLAudioElement;
@@ -13,11 +15,56 @@ export interface ClipPlayerOptions {
  * an <audio> element. Safari only allows this after a user gesture the
  * first time — the retry closure keeps play() inside the tap's call stack.
  */
+/** 50ms of real, valid silence — enough for a user gesture to bless the
+ * element. Built with the product's own encoder, not a hand-rolled URI. */
+function silentWavUrl(): string {
+  const wav = pcm16ToWav(new Uint8Array(Math.round(SAMPLE_RATE * 0.05) * 2), SAMPLE_RATE);
+  const bytes = new Uint8Array(wav);
+  return URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: 'audio/wav' }));
+}
+
+/** Bless any audio element inside a user gesture so later programmatic
+ * playback (the coach's voice arriving over WebRTC) never needs a touch. */
+export function blessAudioElement(element: HTMLAudioElement): void {
+  const url = silentWavUrl();
+  element.src = url;
+  const attempt = element.play();
+  if (attempt) {
+    attempt
+      .then(() => element.pause())
+      .catch(() => undefined)
+      .finally(() => URL.revokeObjectURL(url));
+  }
+}
+
 export class BrowserClipPlayer implements ExcerptPlayer {
   private readonly urls = new Map<string, string>();
   private stopCurrent?: () => void;
+  private unlocked = false;
 
   constructor(private readonly opts: ClipPlayerOptions) {}
+
+  /**
+   * Call synchronously inside a real user tap (Begin). Playing a sliver of
+   * silence blesses the element, so every later programmatic play() — the
+   * coach rolling tape mid-conversation — needs no touch at all.
+   */
+  unlock(): void {
+    if (this.unlocked) return;
+    const audio = this.opts.element;
+    const url = silentWavUrl();
+    audio.src = url;
+    const attempt = audio.play();
+    if (attempt) {
+      attempt
+        .then(() => {
+          this.unlocked = true;
+          audio.pause();
+        })
+        .catch(() => undefined)
+        .finally(() => URL.revokeObjectURL(url));
+    }
+  }
 
   dispose(): void {
     this.stopCurrent?.();

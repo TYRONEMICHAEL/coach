@@ -28,7 +28,7 @@ export default function App() {
   const active = coach.phase === 'live';
 
   return (
-    <main className={`coachShell${coach.mode === 'rehearsal' ? ' coachShell--rehearsal' : ''}`}>
+    <main className={`coachShell${coach.capture === 'recording' ? ' coachShell--rehearsal' : ''}`}>
       <audio ref={coach.remoteAudioRef} autoPlay playsInline className="hiddenAudio" />
       <audio ref={coach.clipAudioRef} playsInline preload="metadata" className="hiddenAudio" />
 
@@ -64,11 +64,13 @@ export default function App() {
         <p className="coachStatus">
           {coach.muted
             ? 'Microphone muted'
-            : coach.presence === 'thinking' && coach.progressMessage
-              ? coach.progressMessage
-              : stateCopy[coach.presence]}
+            : coach.capture === 'finalizing'
+              ? 'Keeping that take…'
+              : coach.presence === 'thinking' && coach.progressMessage
+                ? coach.progressMessage
+                : stateCopy[coach.presence]}
         </p>
-        {coach.presence === 'recording' && <p className="takeTimer">{formatElapsed(coach.elapsed)}</p>}
+        {coach.capture === 'recording' && <p className="takeTimer">{formatElapsed(coach.elapsed)}</p>}
         {coach.phase === 'idle' && (
           <p className="coachPrompt">
             Talk through a meeting. Rehearse a take. Hear the exact moment that needs work — then say it better.
@@ -85,7 +87,7 @@ export default function App() {
           </div>
         )}
 
-        {coach.transcript.length > 0 && coach.mode !== 'rehearsal' && (
+        {coach.transcript.length > 0 && coach.capture !== 'recording' && (
           <div className="transcriptPeek">
             {coach.transcript.slice(-2).map((line, index, shown) => (
               <p
@@ -108,7 +110,7 @@ export default function App() {
             <button type="button" onClick={coach.toggleMute} aria-pressed={coach.muted}>
               {coach.muted ? 'Unmute' : 'Mute'}
             </button>
-            {coach.mode === 'rehearsal' && (
+            {coach.capture === 'recording' && (
               <button type="button" className="doneButton" onClick={coach.finishTake}>
                 I’m done
               </button>

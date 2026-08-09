@@ -7,6 +7,16 @@ export const BYTES_PER_SECOND = SAMPLE_RATE * 2;
 /** The coach is always in exactly one mode. */
 export type Mode = 'coaching' | 'rehearsal';
 
+/**
+ * The take's own lifecycle, separate from the conversation mode: the mode
+ * flips back to coaching the moment the user steps out (so the coach can
+ * hold the room in voice), while the capture state keeps the truth about
+ * the audio — still finalizing, being analyzed, or done. UIs render this,
+ * never their own guesses; the gap between "stopped talking" and "take
+ * safely captured" must always be represented.
+ */
+export type CaptureState = 'idle' | 'recording' | 'finalizing' | 'analyzing';
+
 export interface MeetingContext {
   slug: string;
   title: string;

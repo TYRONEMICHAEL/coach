@@ -55,6 +55,7 @@ function makeSession() {
   const played: Uint8Array[] = [];
   const statuses: string[] = [];
   const modes: string[] = [];
+  const captures: string[] = [];
   const session = new CoachSession({
     provider,
     analyzer,
@@ -64,8 +65,9 @@ function makeSession() {
     playAudio: (pcm) => played.push(pcm),
     onStatus: (line) => statuses.push(line),
     onModeChange: (mode) => modes.push(mode),
+    onCaptureChange: (state) => captures.push(state),
   });
-  return { session, provider, analyzer, memory, player, dataDir, played, statuses, modes };
+  return { session, provider, analyzer, memory, player, dataDir, played, statuses, modes, captures };
 }
 
 /** Let the async tool-call dispatch settle. */
@@ -107,7 +109,7 @@ test('connect sends persona, memory, and the six tools', async () => {
 });
 
 test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay', async () => {
-  const { session, provider, analyzer, memory, player, played, modes } = makeSession();
+  const { session, provider, analyzer, memory, player, played, modes, captures } = makeSession();
   await session.start();
 
   // Rehearsing without a meeting is refused with a recovery path.
@@ -148,6 +150,10 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
   assert.deepEqual(modes, ['rehearsal', 'coaching']);
 
   await session.settleAnalyses();
+
+  // The capture state machine represented every phase of the take's life —
+  // no unrepresented gap between "stopped talking" and "take safe on disk".
+  assert.deepEqual(captures, ['recording', 'finalizing', 'analyzing', 'idle']);
 
   // The analyzer got the take plus context.
   assert.equal(analyzer.requests.length, 1);

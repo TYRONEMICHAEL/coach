@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CoachSession } from '../../src/session';
 import { defaultPersona } from '../../src/persona';
-import type { Mode, RehearsalFeedback } from '../../src/types';
-import { BrowserClipPlayer } from './adapters/clip-player';
+import type { CaptureState, Mode, RehearsalFeedback } from '../../src/types';
+import { BrowserClipPlayer, blessAudioElement } from './adapters/clip-player';
 import { LocalCoachMemory, MEMORY_EVENT } from './adapters/local-memory';
 import { MediaRecorderTake } from './adapters/media-recorder';
 import { MockAnalyzer, ScriptedProvider, SyntheticTakeRecorder } from './adapters/mock';
@@ -33,10 +33,22 @@ export const memory = new LocalCoachMemory();
 const GREETING =
   'The user just opened the app and can hear you. Open per "How you open" — one or two sentences in your own voice, then stop and listen.';
 
-/** Mic + coach-voice levels drive the presence orb via CSS variables —
- * no React re-renders in the audio path. */
+// One AudioContext for the page's lifetime. createMediaElementSource can
+// only ever be called once per element, and closing a context strands the
+// element — so the graph persists and is suspended between sessions.
+type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
+let sharedCtx: AudioContext | null = null;
+const elementSources = new WeakMap<HTMLMediaElement, MediaElementAudioSourceNode>();
+
+function getSharedCtx(): AudioContext | null {
+  if (sharedCtx) return sharedCtx;
+  const AudioContextClass = window.AudioContext || (window as WebkitWindow).webkitAudioContext;
+  if (!AudioContextClass) return null;
+  sharedCtx = new AudioContextClass();
+  return sharedCtx;
+}
+
 interface LevelEngine {
-  ctx: AudioContext;
   raf: number;
   stop: () => void;
 }
@@ -44,6 +56,7 @@ interface LevelEngine {
 export function useCoach() {
   const [phase, setPhase] = useState<'idle' | 'connecting' | 'live' | 'error'>('idle');
   const [mode, setMode] = useState<Mode>('coaching');
+  const [capture, setCapture] = useState<CaptureState>('idle');
   const [speaking, setSpeaking] = useState(false);
   const [analysisPending, setAnalysisPending] = useState(false);
   const [progressMessage, setProgressMessage] = useState('');
@@ -67,6 +80,7 @@ export function useCoach() {
   const presenceRef = useRef<HTMLDivElement | null>(null);
   const levelsRef = useRef<LevelEngine | null>(null);
   const takeTimerRef = useRef<number | null>(null);
+  const speakingDropRef = useRef<number | null>(null);
   const modeRef = useRef<Mode>('coaching');
   const mutedRef = useRef(false);
 
@@ -93,21 +107,42 @@ export function useCoach() {
     if (remote) remote.muted = on || modeRef.current === 'rehearsal';
   }, []);
 
+  /** Voices become motion: mic and coach levels stream into the presence
+   * orb as CSS variables, outside React's render loop. */
   const startLevels = useCallback(() => {
-    type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
-    const AudioContextClass = window.AudioContext || (window as WebkitWindow).webkitAudioContext;
-    if (!AudioContextClass || levelsRef.current) return;
-    const ctx = new AudioContextClass();
+    if (levelsRef.current) return;
+    const ctx = getSharedCtx();
+    if (!ctx) return;
     void ctx.resume().catch(() => undefined);
     const micAnalyser = ctx.createAnalyser();
     micAnalyser.fftSize = 512;
     const voiceAnalyser = ctx.createAnalyser();
     voiceAnalyser.fftSize = 512;
+    const sessionNodes: AudioNode[] = [];
     if (micRef.current) {
       try {
-        ctx.createMediaStreamSource(micRef.current).connect(micAnalyser);
+        const source = ctx.createMediaStreamSource(micRef.current);
+        source.connect(micAnalyser);
+        sessionNodes.push(source);
       } catch {
         // no mic level — the orb still breathes on its own
+      }
+    }
+    // The clip element joins the graph once, forever: replaying the user's
+    // take animates the orb exactly like a live voice.
+    const clipElement = clipAudioRef.current;
+    if (clipElement) {
+      try {
+        let clipSource = elementSources.get(clipElement);
+        if (!clipSource) {
+          clipSource = ctx.createMediaElementSource(clipElement);
+          clipSource.connect(ctx.destination);
+          elementSources.set(clipElement, clipSource);
+        }
+        clipSource.connect(voiceAnalyser);
+        sessionNodes.push(clipSource);
+      } catch {
+        // replay still audible through the element's default path
       }
     }
     let voiceConnected = false;
@@ -125,11 +160,18 @@ export function useCoach() {
       return Math.sqrt(sum / data.length);
     };
     const engine: LevelEngine = {
-      ctx,
       raf: 0,
       stop: () => {
         cancelAnimationFrame(engine.raf);
-        void ctx.close().catch(() => undefined);
+        for (const node of sessionNodes) {
+          try {
+            if (node instanceof MediaElementAudioSourceNode) node.disconnect(voiceAnalyser);
+            else node.disconnect();
+          } catch {
+            // already disconnected
+          }
+        }
+        void ctx.suspend().catch(() => undefined);
         const el = presenceRef.current;
         if (el) {
           el.style.setProperty('--mic', '0');
@@ -142,7 +184,9 @@ export function useCoach() {
         const src = remoteAudioRef.current?.srcObject;
         if (src instanceof MediaStream && src.getAudioTracks().length > 0) {
           try {
-            ctx.createMediaStreamSource(src).connect(voiceAnalyser);
+            const source = ctx.createMediaStreamSource(src);
+            source.connect(voiceAnalyser);
+            sessionNodes.push(source);
             voiceConnected = true;
           } catch {
             voiceConnected = true; // do not retry every frame
@@ -151,7 +195,7 @@ export function useCoach() {
       }
       // Fast attack, slow decay — the orb catches consonants, settles softly.
       mic = Math.max(rms(micAnalyser, micData), mic * 0.88);
-      voice = Math.max(voiceConnected ? rms(voiceAnalyser, voiceData) : 0, voice * 0.88);
+      voice = Math.max(rms(voiceAnalyser, voiceData), voice * 0.88);
       const el = presenceRef.current;
       if (el) {
         el.style.setProperty('--mic', Math.min(1, mic * 5).toFixed(3));
@@ -176,10 +220,43 @@ export function useCoach() {
     setElapsed(0);
   }, []);
 
+  const setSpeakingSmoothed = useCallback((next: boolean) => {
+    if (speakingDropRef.current !== null) {
+      window.clearTimeout(speakingDropRef.current);
+      speakingDropRef.current = null;
+    }
+    if (next) {
+      setSpeaking(true);
+      return;
+    }
+    // Responses arrive in bursts; a hard drop between sentences flickers.
+    speakingDropRef.current = window.setTimeout(() => setSpeaking(false), 550);
+  }, []);
+
   const begin = useCallback(async () => {
     setError('');
     setPhase('connecting');
     setTranscript([]);
+
+    // Everything audio-blessed must happen NOW, synchronously inside the
+    // tap, before the first await — this is what makes replay touch-free.
+    const remoteAudio = remoteAudioRef.current;
+    const clipAudio = clipAudioRef.current;
+    if (!clipAudio || !remoteAudio) {
+      setError('Audio elements are not ready.');
+      setPhase('error');
+      return;
+    }
+    const player = new BrowserClipPlayer({
+      element: clipAudio,
+      duck,
+      onNeedsTap: (retry) => setTapRetry(() => retry),
+    });
+    player.unlock();
+    blessAudioElement(remoteAudio);
+    playerRef.current = player;
+    void getSharedCtx()?.resume().catch(() => undefined);
+
     try {
       if (!MOCK_MODE) {
         const status = (await fetch('/api/status')
@@ -203,17 +280,6 @@ export function useCoach() {
       }
       micRef.current = stream;
 
-      const remoteAudio = remoteAudioRef.current;
-      const clipAudio = clipAudioRef.current;
-      if (!clipAudio || !remoteAudio) throw new Error('Audio elements are not ready.');
-
-      const player = new BrowserClipPlayer({
-        element: clipAudio,
-        duck,
-        onNeedsTap: (retry) => setTapRetry(() => retry),
-      });
-      playerRef.current = player;
-
       const recorder = stream ? new MediaRecorderTake(() => micRef.current) : new SyntheticTakeRecorder();
 
       const provider = MOCK_MODE
@@ -229,7 +295,7 @@ export function useCoach() {
         : new WebRTCRealtimeProvider({
             stream: stream as MediaStream,
             audioElement: remoteAudio,
-            onActivity: (state) => setSpeaking(state === 'speaking'),
+            onActivity: (state) => setSpeakingSmoothed(state === 'speaking'),
           });
       if (MOCK_MODE) providerRef.current = provider as ScriptedProvider;
 
@@ -255,7 +321,10 @@ export function useCoach() {
           // The browser body's silence guarantee: the coach's audio path is
           // physically muted while a take is running.
           if (remote) remote.muted = next === 'rehearsal';
-          if (next === 'rehearsal') {
+        },
+        onCaptureChange: (state) => {
+          setCapture(state);
+          if (state === 'recording') {
             const startedAt = Date.now();
             setElapsed(0);
             takeTimerRef.current = window.setInterval(
@@ -284,7 +353,7 @@ export function useCoach() {
       setError(caught instanceof Error ? caught.message : 'The coach could not start.');
       setPhase('error');
     }
-  }, [duck, pushStatus, startLevels, stopTakeTimer]);
+  }, [duck, pushStatus, setSpeakingSmoothed, startLevels, stopTakeTimer]);
 
   const end = useCallback(async () => {
     await sessionRef.current?.stop().catch(() => undefined);
@@ -296,8 +365,10 @@ export function useCoach() {
     playerRef.current = null;
     stopLevels();
     stopTakeTimer();
+    if (speakingDropRef.current !== null) window.clearTimeout(speakingDropRef.current);
     setPhase('idle');
     setMode('coaching');
+    setCapture('idle');
     modeRef.current = 'coaching';
     setSpeaking(false);
     setAnalysisPending(false);
@@ -335,16 +406,17 @@ export function useCoach() {
     if (phase === 'idle') return 'idle';
     if (phase === 'connecting') return 'connecting';
     if (phase === 'error') return 'error';
-    if (mode === 'rehearsal') return 'recording';
+    if (capture === 'recording') return 'recording';
     if (speaking) return 'speaking';
-    if (analysisPending) return 'thinking';
+    if (capture === 'finalizing' || capture === 'analyzing' || analysisPending) return 'thinking';
     return 'listening';
-  }, [phase, mode, speaking, analysisPending]);
+  }, [phase, capture, speaking, analysisPending]);
 
   return {
     phase,
     presence,
     mode,
+    capture,
     muted,
     error,
     transcript,

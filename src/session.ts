@@ -10,6 +10,7 @@ import type { Persona } from './persona';
 import { buildInstructions, defaultPersona } from './persona';
 import type { ProviderEvent, RealtimeProvider } from './realtime/provider';
 import type {
+  CaptureState,
   ExcerptPlayer,
   ExcerptResult,
   MeetingContext,
@@ -37,6 +38,10 @@ export interface CoachSessionOptions {
   /** Fired on every coaching/rehearsal transition — bodies use it to mute
    * the coach's audio path deterministically during a take. */
   onModeChange?: (mode: Mode) => void;
+  /** The take lifecycle state machine: recording -> finalizing ->
+   * analyzing -> idle. UIs render these instead of inventing transitions,
+   * so there is never an unrepresented gap. */
+  onCaptureChange?: (state: CaptureState) => void;
   /** Analysis lifecycle, for UI state ("listening back…"). */
   onAnalysis?: (state: 'started' | 'ready' | 'failed', takeNumber: number) => void;
 }
@@ -48,6 +53,7 @@ export interface CoachSessionOptions {
  */
 export class CoachSession {
   mode: Mode = 'coaching';
+  capture: CaptureState = 'idle';
   activeMeeting?: MeetingContext;
 
   private readonly provider: RealtimeProvider;
@@ -91,6 +97,7 @@ export class CoachSession {
       rec.ref = this.memory.persistRecording(rec);
       this.status(`rehearsal recording saved unanalyzed: ${rec.ref}`);
     }
+    this.setCapture('idle');
     await this.provider.close();
   }
 
@@ -222,6 +229,7 @@ export class CoachSession {
     this.recorder.start(id);
     this.currentTake = { meeting, takeNumber, id };
     this.setMode('rehearsal');
+    this.setCapture('recording');
     this.status(`recording take ${takeNumber} for "${meeting.title}"`);
     return {
       ok: true,
@@ -236,12 +244,16 @@ export class CoachSession {
     if (this.mode !== 'rehearsal' || !this.currentTake) return { error: 'no rehearsal is running' };
     const pending = this.currentTake;
     this.currentTake = undefined;
+    // The conversation returns to the coach immediately; the capture state
+    // keeps telling the truth about the audio until it is safely finalized.
     this.setMode('coaching');
+    this.setCapture('finalizing');
     let recorded: RecordedTake;
     try {
       recorded = await this.recorder.stop();
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      this.setCapture('idle');
       this.status(`take capture failed: ${message}`);
       return {
         error: `The recording could not be finalized (${message}). Tell the user plainly and offer another take.`,
@@ -251,6 +263,7 @@ export class CoachSession {
     this.takes.set(recorded.id, recorded);
     this.lastTakeId = recorded.id;
     const take: RehearsalTake = { ...pending, seconds: recorded.seconds };
+    this.setCapture('analyzing');
     this.status(`captured ${formatDuration(recorded.seconds)} — analysis dispatched`);
     this.dispatchAnalysis(take, recorded);
     return {
@@ -290,6 +303,7 @@ export class CoachSession {
       .then((feedback) => {
         this.memory.addRehearsalFeedback(take, feedback);
         this.provider.injectSystemNote(formatFeedbackNote(take, feedback), { startResponse: true });
+        this.setCapture('idle');
         this.status(`analysis ready for take ${take.takeNumber}`);
         this.opts.onAnalysis?.('ready', take.takeNumber);
       })
@@ -299,6 +313,7 @@ export class CoachSession {
           `The rehearsal analysis failed (${message}). Tell the user plainly and offer another take; the recording itself is saved.`,
           { startResponse: true }
         );
+        this.setCapture('idle');
         this.status(`analysis failed: ${message}`);
         this.opts.onAnalysis?.('failed', take.takeNumber);
       });
@@ -309,6 +324,12 @@ export class CoachSession {
     if (this.mode === mode) return;
     this.mode = mode;
     this.opts.onModeChange?.(mode);
+  }
+
+  private setCapture(state: CaptureState): void {
+    if (this.capture === state) return;
+    this.capture = state;
+    this.opts.onCaptureChange?.(state);
   }
 
   private instructions(): string {
