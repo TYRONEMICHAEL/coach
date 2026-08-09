@@ -269,6 +269,9 @@ export class CoachSession {
     recorded.ref = this.memory.persistRecording(recorded);
     this.takes.set(recorded.id, recorded);
     this.lastTakeId = recorded.id;
+    // Warm the replay path now: when the coach offers the moment, the
+    // audio is already loaded and seekable.
+    this.player?.prime?.(recorded);
     const take: RehearsalTake = { ...pending, seconds: recorded.seconds };
     this.setCapture('analyzing');
     this.status(`captured ${formatDuration(recorded.seconds)} — analysis dispatched`);
@@ -291,9 +294,19 @@ export class CoachSession {
     const id = input.recordingId ?? this.lastTakeId;
     const take = id ? this.takes.get(id) : undefined;
     if (!take) return { played: false, reason: 'That take is no longer available to replay.' };
-    const startMs = Math.max(0, Math.round(input.startMs));
+    let requestedStart = input.startMs;
+    let requestedEnd = input.endMs;
+    // Realtime models sometimes pass seconds where milliseconds belong,
+    // which replays a sliver from the start of the take. An end value at or
+    // below the take's length in SECONDS is unambiguous: rescale.
+    if (requestedEnd > requestedStart && requestedEnd <= take.seconds + 1) {
+      requestedStart *= 1000;
+      requestedEnd *= 1000;
+      this.status('play_excerpt received seconds — rescaled to milliseconds');
+    }
+    const startMs = Math.max(0, Math.round(requestedStart));
     const durationMs = Math.round(take.seconds * 1000);
-    const endMs = Math.min(Math.max(Math.round(input.endMs), startMs + 250), Math.max(durationMs, startMs + 250));
+    const endMs = Math.min(Math.max(Math.round(requestedEnd), startMs + 250), Math.max(durationMs, startMs + 250));
     this.status(`replaying ${take.id} ${startMs}–${endMs}ms`);
     return this.player.play(take, startMs, endMs);
   }

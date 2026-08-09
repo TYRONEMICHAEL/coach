@@ -68,6 +68,7 @@ export function useCoach() {
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const [memoryVersion, setMemoryVersion] = useState(0);
   const [elapsed, setElapsed] = useState(0);
+  const [replaying, setReplaying] = useState(false);
   const [demoFeedback, setDemoFeedback] = useState<RehearsalFeedback | null>(null);
   const [demoLog, setDemoLog] = useState<string[]>([]);
 
@@ -101,6 +102,9 @@ export function useCoach() {
   }, []);
 
   const duck = useCallback((on: boolean) => {
+    // Ducking only happens around excerpt replay — it doubles as the
+    // "your own voice is playing" signal for the UI.
+    setReplaying(on);
     const track = micRef.current?.getAudioTracks()[0];
     if (track) track.enabled = on ? false : !mutedRef.current;
     const remote = remoteAudioRef.current;
@@ -426,6 +430,7 @@ export function useCoach() {
     analysisPending,
     memoryVersion,
     elapsed,
+    replaying,
     tapPending: tapRetry !== null,
     demo: MOCK_MODE
       ? { provider: providerRef, feedback: demoFeedback, log: demoLog }

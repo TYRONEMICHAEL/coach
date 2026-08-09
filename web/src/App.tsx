@@ -62,13 +62,15 @@ export default function App() {
           <i />
         </div>
         <p className="coachStatus">
-          {coach.muted
-            ? 'Microphone muted'
-            : coach.capture === 'finalizing'
-              ? 'Keeping that take…'
-              : coach.presence === 'thinking' && coach.progressMessage
-                ? coach.progressMessage
-                : stateCopy[coach.presence]}
+          {coach.replaying
+            ? 'Your take — listen.'
+            : coach.muted
+              ? 'Microphone muted'
+              : coach.capture === 'finalizing'
+                ? 'Keeping that take…'
+                : coach.presence === 'thinking' && coach.progressMessage
+                  ? coach.progressMessage
+                  : stateCopy[coach.presence]}
         </p>
         {coach.capture === 'recording' && <p className="takeTimer">{formatElapsed(coach.elapsed)}</p>}
         {coach.phase === 'idle' && (

@@ -2,7 +2,9 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { buildAnalysisPrompt, parseFeedbackJson } from '../src/analysis/analyzer';
 import type { AnalyzeRequest } from '../src/analysis/analyzer';
-import type { RehearsalFeedback } from '../src/types';
+import { pcm16ToWav } from '../src/recorder';
+import type { EvidenceClip, RehearsalFeedback } from '../src/types';
+import { SAMPLE_RATE } from '../src/types';
 
 /**
  * The transcript-vs-audio experiment, run silently on every analyzed take.
@@ -65,6 +67,27 @@ export async function runAbExperiment(opts: AbOptions, input: AbInput): Promise<
     problems.push(`transcription failed: ${message(err)}`);
   }
 
+  // Ground truth for the audio judge's clips: slice the take at each
+  // claimed range and transcribe the slice verbatim. Fabricated timestamps
+  // fail this; real ones prove themselves.
+  const clipChecks: ClipCheck[] = [];
+  for (const [name, clip] of claimedClips(input.audioFeedback)) {
+    try {
+      const heard = await transcribe(opts, sliceWav(request.wav, clip.startMs, clip.endMs));
+      clipChecks.push({ clip: name, claimed_label: clip.label, range_ms: [clip.startMs, clip.endMs], heard });
+    } catch (err) {
+      clipChecks.push({
+        clip: name,
+        claimed_label: clip.label,
+        range_ms: [clip.startMs, clip.endMs],
+        heard: `(verification failed: ${message(err)})`,
+      });
+    }
+  }
+  if (clipChecks.length) {
+    fs.writeFileSync(path.join(dir, 'clips-verified.json'), JSON.stringify(clipChecks, null, 2));
+  }
+
   const textModel = opts.textModel ?? 'google/gemini-2.5-flash';
   let textFeedback: RehearsalFeedback | undefined;
   if (!problems.length) {
@@ -83,7 +106,7 @@ export async function runAbExperiment(opts: AbOptions, input: AbInput): Promise<
   let verdict: AbVerdict | undefined;
   if (textFeedback) {
     try {
-      verdict = await blindedVerdict(opts, judgeModel, transcript, textFeedback, input.audioFeedback);
+      verdict = await blindedVerdict(opts, judgeModel, transcript, textFeedback, input.audioFeedback, clipChecks);
       fs.writeFileSync(path.join(dir, 'verdict.json'), JSON.stringify({ model: judgeModel, ...verdict }, null, 2));
     } catch (err) {
       problems.push(`verdict judge failed: ${message(err)}`);
@@ -99,6 +122,13 @@ export async function runAbExperiment(opts: AbOptions, input: AbInput): Promise<
       '',
       '## Transcript',
       transcript.trim() || '(empty)',
+      '',
+      '## Clip verification (audio ground truth)',
+      clipChecks.length
+        ? clipChecks
+            .map((c) => `- ${c.clip} ${c.range_ms[0]}–${c.range_ms[1]}ms · claimed "${c.claimed_label}" · heard "${c.heard.trim()}"`)
+            .join('\n')
+        : '(no clips cited)',
       '',
       '## Feedback A — transcript only',
       '```json',
@@ -124,11 +154,37 @@ function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+interface ClipCheck {
+  clip: string;
+  claimed_label: string;
+  range_ms: [number, number];
+  heard: string;
+}
+
+function claimedClips(fb: RehearsalFeedback): Array<[string, EvidenceClip]> {
+  const clips: Array<[string, EvidenceClip]> = [];
+  if (fb.strengthClip) clips.push(['strength', fb.strengthClip]);
+  if (fb.priority?.clip) clips.push(['priority', fb.priority.clip]);
+  return clips;
+}
+
+/** Cut a span out of a 24k mono pcm16 WAV — pure byte math. */
+export function sliceWav(wav: Uint8Array, startMs: number, endMs: number): Uint8Array {
+  const bytesPerMs = (SAMPLE_RATE * 2) / 1000; // 48 — always even at 24k
+  const start = 44 + Math.max(0, Math.round(startMs)) * bytesPerMs;
+  const end = Math.min(wav.length, 44 + Math.round(endMs) * bytesPerMs);
+  return pcm16ToWav(wav.subarray(start, Math.max(start, end)), SAMPLE_RATE);
+}
+
+/** whisper-1 with a verbatim prompt: fillers and false starts are exactly
+ * what this experiment is about, and sanitized transcripts convict honest
+ * audio claims of fabrication. */
 async function transcribe(opts: AbOptions, wav: Uint8Array): Promise<string> {
   const form = new FormData();
   const bytes = new Uint8Array(wav);
   form.set('file', new Blob([bytes.buffer as ArrayBuffer], { type: 'audio/wav' }), 'take.wav');
-  form.set('model', 'gpt-4o-mini-transcribe');
+  form.set('model', 'whisper-1');
+  form.set('prompt', 'Transcribe verbatim, keeping every um, uh, so, like, and false start.');
   const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
     signal: AbortSignal.timeout(120_000),
@@ -172,20 +228,28 @@ async function blindedVerdict(
   model: string,
   transcript: string,
   a: RehearsalFeedback,
-  b: RehearsalFeedback
+  b: RehearsalFeedback,
+  clipChecks: ClipCheck[]
 ): Promise<AbVerdict> {
   const prompt = [
     'Two pieces of speaking-coach feedback were produced for the same rehearsal take. You get the transcript and both feedbacks. You do NOT know how either was produced.',
     '',
+    'Methodology cautions:',
+    '- The transcript aims to be verbatim but transcription still normalizes some disfluencies. A feedback claim about a filler ("um", a tentative "so") that is absent from the transcript is NOT automatically fabrication.',
+    '- CLIP VERIFICATION below is ground truth: each cited time range was cut from the actual audio and independently transcribed. A clip whose verification matches its label is proven real — timestamps are then facts, not fabrications. A clip whose verification contradicts its label is hard evidence of fabrication.',
+    '',
     'Judge them:',
-    '1. Which specific claims in A are NOT supported by the transcript? Which in B?',
-    '2. List every claim in B that could not be known from the words alone (tone, pace, pauses, emphasis, timing). For each, judge whether it reads as a plausible observation of real audio or as fabrication (invented quotes, generic acoustic claims that fit any take).',
+    '1. Which specific claims in A are NOT supported by the transcript? Which in B (after applying the cautions)?',
+    '2. List every claim in B that could not be known from the words alone (tone, pace, pauses, emphasis, timing). For each, judge whether it is proven by clip verification, plausible, or likely fabricated.',
     '3. Which feedback would actually help this speaker more on their next take, and why — one paragraph, no diplomacy.',
     '',
     'Respond with ONLY JSON: { "a_claims_unsupported": [], "b_claims_unsupported": [], "b_beyond_words": [], "b_beyond_words_plausible": true|false, "more_useful": "A"|"B"|"tie", "reason": "" }',
     '',
     'TRANSCRIPT:',
     transcript.trim() || '(no words)',
+    '',
+    'CLIP VERIFICATION (audio ground truth):',
+    clipChecks.length ? JSON.stringify(clipChecks, null, 2) : '(no clips were cited)',
     '',
     'FEEDBACK A:',
     JSON.stringify(a, null, 2),

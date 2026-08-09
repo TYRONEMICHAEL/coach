@@ -76,6 +76,17 @@ export class BrowserClipPlayer implements ExcerptPlayer {
     return this.playInternal(take, startMs, endMs, false);
   }
 
+  /** Load the take into the element ahead of time — metadata ready means
+   * replay starts the moment the coach offers it. */
+  prime(take: RecordedTake): void {
+    const audio = this.opts.element;
+    const url = this.urlFor(take);
+    if (audio.src !== url) {
+      audio.src = url;
+      audio.load();
+    }
+  }
+
   private urlFor(take: RecordedTake): string {
     let url = this.urls.get(take.id);
     if (!url) {

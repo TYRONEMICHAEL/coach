@@ -197,6 +197,11 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
   assert.equal(replayLatest.output.played, true);
   assert.equal(player.calls.length, 2);
 
+  // A model passing seconds instead of milliseconds gets rescaled, not a
+  // sliver: end 1.2 on a 1.5s take means 200–1200ms, not 0.2–1.2ms.
+  await callTool(provider, 'c6b', 'play_excerpt', { start_ms: 0.2, end_ms: 1.2 });
+  assert.deepEqual(player.calls.at(-1), { id: 'q3-board-review-take-1', startMs: 200, endMs: 1200 });
+
   // Continuity: instructions now carry where the meeting left off…
   assert.match(provider.instructionUpdates.at(-1)!, /Where each meeting left off/);
   assert.match(provider.instructionUpdates.at(-1)!, /the ask arrived late and hedged/);

@@ -76,6 +76,9 @@ export interface ExcerptResult {
  */
 export interface ExcerptPlayer {
   play(take: RecordedTake, startMs: number, endMs: number): Promise<ExcerptResult>;
+  /** Optional warm-up: the session calls this when a take's analysis lands,
+   * so replay starts instantly when the coach offers the moment. */
+  prime?(take: RecordedTake): void;
 }
 
 /** A moment the analyzer can prove: a replayable slice of the take. */
