@@ -45,6 +45,7 @@ export default function App() {
     <main className={`coachShell${coach.capture === 'recording' ? ' coachShell--rehearsal' : ''}`}>
       <audio ref={coach.remoteAudioRef} autoPlay playsInline className="hiddenAudio" />
       <audio ref={coach.clipAudioRef} playsInline preload="metadata" className="hiddenAudio" />
+      <audio ref={coach.cueAudioRef} playsInline className="hiddenAudio" />
 
       <header className="topBar">
         <span className="wordmark">{MOCK_MODE ? 'COACH · DEMO' : 'COACH'}</span>
@@ -70,7 +71,8 @@ export default function App() {
         </p>
 
         <p className="statusLine">
-          {status}
+          {coach.capture === 'recording' && <span className="recDot" aria-hidden="true" />}
+          {coach.capture === 'recording' ? 'recording — the room is yours' : status}
           {coach.capture === 'recording' && <span className="takeTimer"> · {formatElapsed(coach.elapsed)}</span>}
         </p>
 

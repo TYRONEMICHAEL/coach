@@ -352,9 +352,17 @@ export class CoachSession {
       requestedEnd *= 1000;
       this.status('play_excerpt received seconds — rescaled to milliseconds');
     }
-    const startMs = Math.max(0, Math.round(requestedStart));
+    let startMs = Math.max(0, Math.round(requestedStart));
+    let endMs = Math.round(requestedEnd);
     const durationMs = Math.round(take.seconds * 1000);
-    const endMs = Math.min(Math.max(Math.round(requestedEnd), startMs + 250), Math.max(durationMs, startMs + 250));
+    // A moment shorter than ~3s is inaudible as evidence: expand the
+    // window around the request, then clamp inside the take.
+    endMs = Math.max(endMs, startMs + 3_000);
+    if (endMs > durationMs) {
+      endMs = durationMs;
+      startMs = Math.max(0, Math.min(startMs, endMs - 3_000));
+    }
+    endMs = Math.max(endMs, startMs + 250);
     this.status(`replaying ${take.id} ${startMs}–${endMs}ms`);
     return this.player.play(take, startMs, endMs);
   }

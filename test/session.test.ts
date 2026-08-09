@@ -138,8 +138,8 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
   assert.deepEqual(modes, ['rehearsal']);
 
   // During the rehearsal: mic frames are teed, coach audio is muted.
-  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 2).fill(2)); // 2s
-  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND / 2).fill(3)); // 0.5s
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 4).fill(2)); // 4s
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND).fill(3)); // 1s
   provider.emit({ type: 'audio', pcm: new Uint8Array(10) });
   assert.equal(played.length, 0);
 
@@ -159,8 +159,8 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
   // The analyzer got the take plus context.
   assert.equal(analyzer.requests.length, 1);
   assert.equal(analyzer.requests[0]?.meeting.slug, 'q3-board-review');
-  assert.equal(analyzer.requests[0]?.durationMs, 2500);
-  assert.equal(analyzer.requests[0]?.wav.length, 44 + BYTES_PER_SECOND * 2.5); // header + only rehearsal frames
+  assert.equal(analyzer.requests[0]?.durationMs, 5000);
+  assert.equal(analyzer.requests[0]?.wav.length, 44 + BYTES_PER_SECOND * 5); // header + only rehearsal frames
 
   // The recording landed on disk.
   const wavPath = path.join(memory.dataDir, 'recordings', 'q3-board-review-take-1.wav');
@@ -191,17 +191,17 @@ test('the full rehearsal loop: detect, record, analyze, debrief, persist, replay
     end_ms: 99_000,
   });
   assert.equal(replay.output.played, true);
-  assert.deepEqual(player.calls, [{ id: 'q3-board-review-take-1', startMs: 1000, endMs: 2500 }]);
+  assert.deepEqual(player.calls, [{ id: 'q3-board-review-take-1', startMs: 1000, endMs: 5000 }]);
 
-  // Omitting the id replays the latest take.
+  // A sliver request is expanded to an audible window (min ~3s).
   const replayLatest = await callTool(provider, 'c6', 'play_excerpt', { start_ms: 0, end_ms: 400 });
   assert.equal(replayLatest.output.played, true);
-  assert.equal(player.calls.length, 2);
+  assert.deepEqual(player.calls.at(-1), { id: 'q3-board-review-take-1', startMs: 0, endMs: 3000 });
 
   // A model passing seconds instead of milliseconds gets rescaled, not a
-  // sliver: end 1.2 on a 2.5s take means 200–1200ms, not 0.2–1.2ms.
+  // sliver: end 1.2 on a 5s take means 200ms in, expanded to an audible window.
   await callTool(provider, 'c6b', 'play_excerpt', { start_ms: 0.2, end_ms: 1.2 });
-  assert.deepEqual(player.calls.at(-1), { id: 'q3-board-review-take-1', startMs: 200, endMs: 1200 });
+  assert.deepEqual(player.calls.at(-1), { id: 'q3-board-review-take-1', startMs: 200, endMs: 3200 });
 
   // Continuity: instructions now carry where the meeting left off…
   assert.match(provider.instructionUpdates.at(-1)!, /Where each meeting left off/);

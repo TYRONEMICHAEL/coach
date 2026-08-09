@@ -35,11 +35,25 @@ button { font: inherit; }
 }
 .coachShell > * { position: relative; z-index: 2; }
 
-/* The rehearsal ritual: everything but the line and the timer recedes. */
+/* The rehearsal ritual: the paper itself warms, everything but the line
+   and the timer recedes. Unmistakable at arm's length. */
+.coachShell { transition: background-color .8s ease; }
+.coachShell--rehearsal { background-color: #efdfcf; }
 .topBar, .coachName, .privacyLine, .coachSays { transition: opacity .7s ease; }
 .coachShell--rehearsal .topBar,
 .coachShell--rehearsal .privacyLine { opacity: .15; }
 .coachShell--rehearsal .coachName { opacity: .3; }
+
+.recDot {
+  display: inline-block;
+  width: 9px; height: 9px;
+  margin-right: 9px;
+  border-radius: 50%;
+  background: var(--terracotta);
+  animation: recPulse 1.6s ease-in-out infinite;
+  vertical-align: 1px;
+}
+@keyframes recPulse { 50% { opacity: .35; transform: scale(.85); } }
 
 .topBar {
   position: fixed;

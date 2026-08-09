@@ -37,6 +37,39 @@ export function blessAudioElement(element: HTMLAudioElement): void {
   }
 }
 
+/** Soft earcons for eyes-free state changes: a rising pair when recording
+ * starts, a falling pair when it stops — the Voice Memos convention. */
+function cueWavUrl(kind: 'start' | 'stop'): string {
+  const noteMs = 90;
+  const gapMs = 30;
+  const total = Math.round((SAMPLE_RATE * (noteMs * 2 + gapMs)) / 1000);
+  const pcm = new Uint8Array(total * 2);
+  const view = new DataView(pcm.buffer);
+  const freqs = kind === 'start' ? [660, 990] : [990, 660];
+  for (let i = 0; i < total; i += 1) {
+    const ms = (i / SAMPLE_RATE) * 1000;
+    const inSecond = ms > noteMs + gapMs;
+    const inFirst = ms < noteMs;
+    if (!inFirst && !inSecond) continue;
+    const noteT = inFirst ? ms / 1000 : (ms - noteMs - gapMs) / 1000;
+    const freq = inFirst ? freqs[0]! : freqs[1]!;
+    const envelope = Math.sin(Math.PI * Math.min(1, (noteT * 1000) / noteMs));
+    view.setInt16(i * 2, Math.round(Math.sin(2 * Math.PI * freq * noteT) * envelope * 0.16 * 0x7fff), true);
+  }
+  const wav = pcm16ToWav(pcm, SAMPLE_RATE);
+  const bytes = new Uint8Array(wav);
+  return URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: 'audio/wav' }));
+}
+
+const cueUrls: { start?: string; stop?: string } = {};
+
+/** Play a state-change cue through a blessed element. */
+export function playCue(element: HTMLAudioElement, kind: 'start' | 'stop'): void {
+  cueUrls[kind] = cueUrls[kind] ?? cueWavUrl(kind);
+  element.src = cueUrls[kind]!;
+  void element.play().catch(() => undefined);
+}
+
 export class BrowserClipPlayer implements ExcerptPlayer {
   private readonly urls = new Map<string, string>();
   private stopCurrent?: () => void;
@@ -171,9 +204,24 @@ export class BrowserClipPlayer implements ExcerptPlayer {
         // cap this wait never ends and the mic never comes back. The
         // excerpt's own length plus headroom is the longest it can take.
         const watchdog = window.setTimeout(() => finish(), endMs - startMs + 3_000);
+        // iOS also pauses the element transiently while switching audio
+        // routes at replay start. A pause is NOT the end — resume it, up
+        // to three times, before giving up.
+        let resumes = 0;
         const timer = window.setInterval(() => {
-          if (audio.ended || audio.paused || audio.currentTime * 1000 >= endMs) finish();
-        }, 50);
+          if (audio.ended || audio.currentTime * 1000 >= endMs) {
+            finish();
+            return;
+          }
+          if (audio.paused) {
+            if (resumes < 3) {
+              resumes += 1;
+              void audio.play().catch(() => finish());
+            } else {
+              finish();
+            }
+          }
+        }, 120);
         const finish = () => {
           window.clearInterval(timer);
           window.clearTimeout(watchdog);

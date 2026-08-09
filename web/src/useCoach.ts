@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CoachSession } from '../../src/session';
 import { defaultPersona } from '../../src/persona';
 import type { CaptureState, Mode, RehearsalFeedback } from '../../src/types';
-import { BrowserClipPlayer, blessAudioElement } from './adapters/clip-player';
+import { BrowserClipPlayer, blessAudioElement, playCue } from './adapters/clip-player';
 import { LocalCoachMemory, MEMORY_EVENT } from './adapters/local-memory';
 import { MediaRecorderTake } from './adapters/media-recorder';
 import { MockAnalyzer, ScriptedProvider, SyntheticTakeRecorder } from './adapters/mock';
@@ -37,6 +37,13 @@ const GREETING =
 // One AudioContext for the page's lifetime, suspended between sessions.
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 let sharedCtx: AudioContext | null = null;
+
+// On iOS, attaching a second consumer (an analyser) to the live WebRTC
+// streams corrupts the call audio into static. The line animates from
+// state there; real levels are a desktop luxury.
+export const IS_IOS =
+  /iP(hone|ad|od)/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 function getSharedCtx(): AudioContext | null {
   if (sharedCtx) return sharedCtx;
@@ -76,6 +83,7 @@ export function useCoach() {
   const playerRef = useRef<BrowserClipPlayer | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const clipAudioRef = useRef<HTMLAudioElement | null>(null);
+  const cueAudioRef = useRef<HTMLAudioElement | null>(null);
   const levelsRef = useRef<LevelEngine | null>(null);
   const takeTimerRef = useRef<number | null>(null);
   const speakingDropRef = useRef<number | null>(null);
@@ -108,9 +116,10 @@ export function useCoach() {
     if (remote) remote.muted = on || modeRef.current === 'rehearsal';
   }, []);
 
-  /** Voices become motion: mic and coach levels stream into the presence
-   * orb as CSS variables, outside React's render loop. */
+  /** Voices become motion: mic and coach levels feed the wave line,
+   * outside React's render loop. Never on iOS — see IS_IOS. */
   const startLevels = useCallback(() => {
+    if (IS_IOS) return;
     if (levelsRef.current) return;
     const ctx = getSharedCtx();
     if (!ctx) return;
@@ -234,6 +243,7 @@ export function useCoach() {
     });
     player.unlock();
     blessAudioElement(remoteAudio);
+    if (cueAudioRef.current) blessAudioElement(cueAudioRef.current);
     playerRef.current = player;
     void getSharedCtx()?.resume().catch(() => undefined);
 
@@ -311,6 +321,10 @@ export function useCoach() {
         },
         onCaptureChange: (state) => {
           setCapture(state);
+          // Eyes-free legibility: the Voice Memos tick, in and out.
+          const cueElement = cueAudioRef.current;
+          if (cueElement && state === 'recording') playCue(cueElement, 'start');
+          if (cueElement && state === 'finalizing') playCue(cueElement, 'stop');
           if (state === 'recording') {
             const startedAt = Date.now();
             setElapsed(0);
@@ -424,6 +438,7 @@ export function useCoach() {
       : null,
     remoteAudioRef,
     clipAudioRef,
+    cueAudioRef,
     begin,
     end,
     toggleMute,

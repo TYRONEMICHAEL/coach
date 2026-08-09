@@ -40,10 +40,18 @@ export default function WaveLine({ state, replaying }: { state: Presence; replay
 
       const t = (performance.now() - start) / 1000;
       const live = presence !== 'idle' && presence !== 'connecting' && presence !== 'error';
+      // Where real levels are unavailable (iOS keeps its hands off the call
+      // audio), the state itself keeps the line moving.
+      const stateFloor =
+        presence === 'speaking'
+          ? 0.28 + 0.2 * Math.sin(t * 2.3) + 0.07 * Math.sin(t * 7.1)
+          : presence === 'recording'
+            ? 0.22 + 0.1 * Math.sin(t * 1.7)
+            : 0;
       const target = isReplaying
         ? 0.35 + 0.3 * Math.sin(t * 2.4)
         : live
-          ? Math.max(levels.mic, levels.voice)
+          ? Math.max(levels.mic, levels.voice, stateFloor)
           : 0;
       // Fast rise, soft fall — consonants catch, silence settles.
       energy = target > energy ? target : energy * 0.94;
@@ -74,7 +82,8 @@ export default function WaveLine({ state, replaying }: { state: Presence; replay
         context.stroke();
       };
 
-      wave(0, 3, 0.85, 1.5);
+      const mainWeight = presence === 'recording' ? 2 : 1.5;
+      wave(0, 3, 0.85, mainWeight);
       wave(1.9, 3.6, 0.22, 1);
 
       raf = requestAnimationFrame(draw);
