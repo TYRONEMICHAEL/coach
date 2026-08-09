@@ -7,11 +7,17 @@ const stateCopy: Record<Presence, string> = {
   idle: 'Ready when you are',
   connecting: 'Joining you…',
   listening: 'Listening',
-  speaking: `${COACH_NAME.replace(' (demo)', '')} is speaking`,
-  recording: 'Recording your rehearsal',
+  speaking: COACH_NAME.replace(' (demo)', ''),
+  recording: 'The room is yours.',
   thinking: 'Listening back…',
   error: 'Couldn’t join',
 };
+
+function formatElapsed(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
 
 export default function App() {
   const coach = useCoach();
@@ -22,7 +28,7 @@ export default function App() {
   const active = coach.phase === 'live';
 
   return (
-    <main className="coachShell">
+    <main className={`coachShell${coach.mode === 'rehearsal' ? ' coachShell--rehearsal' : ''}`}>
       <audio ref={coach.remoteAudioRef} autoPlay playsInline className="hiddenAudio" />
       <audio ref={coach.clipAudioRef} playsInline preload="metadata" className="hiddenAudio" />
 
@@ -32,13 +38,9 @@ export default function App() {
           <span className="prototypeTag">{MOCK_MODE ? 'DEMO — NO KEYS' : 'ONE BRAIN · WEB BODY'}</span>
         </div>
         <div className="headerActions">
-          {!MOCK_MODE && coach.serverStatus && (
-            <span className={`statusPill ${coach.serverStatus.openai && coach.serverStatus.openrouter ? 'ok' : 'warn'}`}>
-              {coach.serverStatus.openai
-                ? coach.serverStatus.openrouter
-                  ? 'Relay ready'
-                  : 'Voice only — no analyzer key'
-                : 'Relay keys missing'}
+          {!MOCK_MODE && coach.serverStatus && !(coach.serverStatus.openai && coach.serverStatus.openrouter) && (
+            <span className="statusPill warn">
+              {coach.serverStatus.openai ? 'Voice only — no analyzer key' : 'Relay keys missing'}
             </span>
           )}
           <button
@@ -54,7 +56,7 @@ export default function App() {
       <section className="coachStage" aria-live="polite">
         <p className="eyebrow">YOUR SPEAKING COACH</p>
         <h1>{COACH_NAME.replace(' (demo)', '')}</h1>
-        <div className={`presence presence--${coach.presence}`} aria-hidden="true">
+        <div ref={coach.presenceRef} className={`presence presence--${coach.presence}`} aria-hidden="true">
           <i />
           <i />
           <i />
@@ -66,6 +68,7 @@ export default function App() {
               ? coach.progressMessage
               : stateCopy[coach.presence]}
         </p>
+        {coach.presence === 'recording' && <p className="takeTimer">{formatElapsed(coach.elapsed)}</p>}
         {coach.phase === 'idle' && (
           <p className="coachPrompt">
             Talk through a meeting. Rehearse a take. Hear the exact moment that needs work — then say it better.
@@ -82,11 +85,14 @@ export default function App() {
           </div>
         )}
 
-        {coach.transcript.length > 0 && (
+        {coach.transcript.length > 0 && coach.mode !== 'rehearsal' && (
           <div className="transcriptPeek">
-            {coach.transcript.slice(-2).map((line, index) => (
-              <p key={`${line.text}-${index}`} className={line.role === 'coach' ? 'coachLine' : 'userLine'}>
-                <span>{line.role === 'coach' ? COACH_NAME.replace(' (demo)', '') : 'You'}</span>
+            {coach.transcript.slice(-2).map((line, index, shown) => (
+              <p
+                key={`${line.text}-${index}`}
+                className={`${line.role === 'coach' ? 'coachLine' : 'userLine'}${index < shown.length - 1 ? ' pastLine' : ''}`}
+              >
+                {line.role === 'user' && <span>You</span>}
                 {line.text}
               </p>
             ))}

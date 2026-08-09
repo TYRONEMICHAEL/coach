@@ -27,6 +27,9 @@ export interface CoachSessionOptions {
   player?: ExcerptPlayer;
   persona?: Persona;
   voice?: string;
+  /** Injected once after connect (startResponse) so the coach speaks first,
+   * in character, using what memory already holds. */
+  greeting?: string;
   playAudio?: (pcm: Uint8Array) => void;
   stopAudio?: () => void;
   onTranscript?: (role: 'user' | 'coach', text: string) => void;
@@ -76,6 +79,9 @@ export class CoachSession {
       tools: coachTools(),
       voice: this.opts.voice,
     });
+    if (this.opts.greeting) {
+      this.provider.injectSystemNote(this.opts.greeting, { startResponse: true });
+    }
   }
 
   async stop(): Promise<void> {

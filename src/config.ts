@@ -29,6 +29,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): CoachConfig {
     // coaching priority; inkling correctly returned "mic check, no speech".
     analyzerModel: env.COACH_ANALYZER_MODEL ?? 'thinkingmachines/inkling-small',
     dataDir: env.COACH_DATA_DIR ?? path.join(coachRoot, 'data'),
-    coachName: env.COACH_NAME ?? 'Coach',
+    coachName: env.COACH_NAME ?? 'Marguerite',
   };
 }

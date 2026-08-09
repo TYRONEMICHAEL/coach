@@ -100,7 +100,7 @@ test('connect sends persona, memory, and the six tools', async () => {
   await session.start();
   assert.ok(provider.config);
   assert.equal(provider.config.tools.length, 6);
-  assert.match(provider.config.instructions, /You are Coach/);
+  assert.match(provider.config.instructions, /You are Marguerite/);
   assert.match(provider.config.instructions, /begin_rehearsal/);
   assert.match(provider.config.instructions, /play_excerpt/);
   assert.match(provider.config.instructions, /\(none yet\)/);

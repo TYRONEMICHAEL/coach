@@ -26,9 +26,20 @@ export interface ServerStatus {
 const params = new URLSearchParams(window.location.search);
 export const MOCK_MODE = params.has('mock');
 export const DEBUG_MODE = params.has('debug');
-export const COACH_NAME = params.get('name') || (MOCK_MODE ? 'Coach (demo)' : 'Coach');
+export const COACH_NAME = params.get('name') || defaultPersona.name;
 
 export const memory = new LocalCoachMemory();
+
+const GREETING =
+  'The user just opened the app and can hear you. Open per "How you open" — one or two sentences in your own voice, then stop and listen.';
+
+/** Mic + coach-voice levels drive the presence orb via CSS variables —
+ * no React re-renders in the audio path. */
+interface LevelEngine {
+  ctx: AudioContext;
+  raf: number;
+  stop: () => void;
+}
 
 export function useCoach() {
   const [phase, setPhase] = useState<'idle' | 'connecting' | 'live' | 'error'>('idle');
@@ -43,6 +54,7 @@ export function useCoach() {
   const [tapRetry, setTapRetry] = useState<(() => void) | null>(null);
   const [serverStatus, setServerStatus] = useState<ServerStatus | null>(null);
   const [memoryVersion, setMemoryVersion] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   const [demoFeedback, setDemoFeedback] = useState<RehearsalFeedback | null>(null);
   const [demoLog, setDemoLog] = useState<string[]>([]);
 
@@ -52,6 +64,9 @@ export function useCoach() {
   const playerRef = useRef<BrowserClipPlayer | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const clipAudioRef = useRef<HTMLAudioElement | null>(null);
+  const presenceRef = useRef<HTMLDivElement | null>(null);
+  const levelsRef = useRef<LevelEngine | null>(null);
+  const takeTimerRef = useRef<number | null>(null);
   const modeRef = useRef<Mode>('coaching');
   const mutedRef = useRef(false);
 
@@ -76,6 +91,89 @@ export function useCoach() {
     if (track) track.enabled = on ? false : !mutedRef.current;
     const remote = remoteAudioRef.current;
     if (remote) remote.muted = on || modeRef.current === 'rehearsal';
+  }, []);
+
+  const startLevels = useCallback(() => {
+    type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
+    const AudioContextClass = window.AudioContext || (window as WebkitWindow).webkitAudioContext;
+    if (!AudioContextClass || levelsRef.current) return;
+    const ctx = new AudioContextClass();
+    void ctx.resume().catch(() => undefined);
+    const micAnalyser = ctx.createAnalyser();
+    micAnalyser.fftSize = 512;
+    const voiceAnalyser = ctx.createAnalyser();
+    voiceAnalyser.fftSize = 512;
+    if (micRef.current) {
+      try {
+        ctx.createMediaStreamSource(micRef.current).connect(micAnalyser);
+      } catch {
+        // no mic level — the orb still breathes on its own
+      }
+    }
+    let voiceConnected = false;
+    const micData = new Uint8Array(micAnalyser.fftSize);
+    const voiceData = new Uint8Array(voiceAnalyser.fftSize);
+    let mic = 0;
+    let voice = 0;
+    const rms = (analyser: AnalyserNode, data: Uint8Array<ArrayBuffer>): number => {
+      analyser.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i += 1) {
+        const v = ((data[i] ?? 128) - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / data.length);
+    };
+    const engine: LevelEngine = {
+      ctx,
+      raf: 0,
+      stop: () => {
+        cancelAnimationFrame(engine.raf);
+        void ctx.close().catch(() => undefined);
+        const el = presenceRef.current;
+        if (el) {
+          el.style.setProperty('--mic', '0');
+          el.style.setProperty('--voice', '0');
+        }
+      },
+    };
+    const loop = () => {
+      if (!voiceConnected) {
+        const src = remoteAudioRef.current?.srcObject;
+        if (src instanceof MediaStream && src.getAudioTracks().length > 0) {
+          try {
+            ctx.createMediaStreamSource(src).connect(voiceAnalyser);
+            voiceConnected = true;
+          } catch {
+            voiceConnected = true; // do not retry every frame
+          }
+        }
+      }
+      // Fast attack, slow decay — the orb catches consonants, settles softly.
+      mic = Math.max(rms(micAnalyser, micData), mic * 0.88);
+      voice = Math.max(voiceConnected ? rms(voiceAnalyser, voiceData) : 0, voice * 0.88);
+      const el = presenceRef.current;
+      if (el) {
+        el.style.setProperty('--mic', Math.min(1, mic * 5).toFixed(3));
+        el.style.setProperty('--voice', Math.min(1, voice * 5).toFixed(3));
+      }
+      engine.raf = requestAnimationFrame(loop);
+    };
+    engine.raf = requestAnimationFrame(loop);
+    levelsRef.current = engine;
+  }, []);
+
+  const stopLevels = useCallback(() => {
+    levelsRef.current?.stop();
+    levelsRef.current = null;
+  }, []);
+
+  const stopTakeTimer = useCallback(() => {
+    if (takeTimerRef.current !== null) {
+      window.clearInterval(takeTimerRef.current);
+      takeTimerRef.current = null;
+    }
+    setElapsed(0);
   }, []);
 
   const begin = useCallback(async () => {
@@ -146,6 +244,7 @@ export function useCoach() {
         recorder,
         player,
         persona: { ...defaultPersona, name: COACH_NAME.replace(' (demo)', '') },
+        greeting: MOCK_MODE ? undefined : GREETING,
         onTranscript: (role, text) =>
           setTranscript((lines) => [...lines, { role, text }].slice(-8)),
         onStatus: pushStatus,
@@ -156,6 +255,16 @@ export function useCoach() {
           // The browser body's silence guarantee: the coach's audio path is
           // physically muted while a take is running.
           if (remote) remote.muted = next === 'rehearsal';
+          if (next === 'rehearsal') {
+            const startedAt = Date.now();
+            setElapsed(0);
+            takeTimerRef.current = window.setInterval(
+              () => setElapsed(Math.floor((Date.now() - startedAt) / 1000)),
+              1000
+            );
+          } else {
+            stopTakeTimer();
+          }
         },
         onAnalysis: (state) => {
           setAnalysisPending(state === 'started');
@@ -164,6 +273,7 @@ export function useCoach() {
       });
       sessionRef.current = session;
       await session.start();
+      startLevels();
       setPhase('live');
       if (MOCK_MODE) {
         setDemoLog(['demo connected — drive the loop with the panel below']);
@@ -174,7 +284,7 @@ export function useCoach() {
       setError(caught instanceof Error ? caught.message : 'The coach could not start.');
       setPhase('error');
     }
-  }, [duck, pushStatus]);
+  }, [duck, pushStatus, startLevels, stopTakeTimer]);
 
   const end = useCallback(async () => {
     await sessionRef.current?.stop().catch(() => undefined);
@@ -184,6 +294,8 @@ export function useCoach() {
     micRef.current = null;
     playerRef.current?.dispose();
     playerRef.current = null;
+    stopLevels();
+    stopTakeTimer();
     setPhase('idle');
     setMode('coaching');
     modeRef.current = 'coaching';
@@ -192,9 +304,10 @@ export function useCoach() {
     setMuted(false);
     mutedRef.current = false;
     setTapRetry(null);
+    setTranscript([]);
     setDemoFeedback(null);
     setDemoLog([]);
-  }, []);
+  }, [stopLevels, stopTakeTimer]);
 
   const toggleMute = useCallback(() => {
     setMuted((current) => {
@@ -240,12 +353,14 @@ export function useCoach() {
     progressMessage,
     analysisPending,
     memoryVersion,
+    elapsed,
     tapPending: tapRetry !== null,
     demo: MOCK_MODE
       ? { provider: providerRef, feedback: demoFeedback, log: demoLog }
       : null,
     remoteAudioRef,
     clipAudioRef,
+    presenceRef,
     begin,
     end,
     toggleMute,

@@ -29,6 +29,8 @@ async function main(): Promise<void> {
     player: new SoxExcerptPlayer(),
     persona: { ...defaultPersona, name: config.coachName },
     voice: config.voice,
+    greeting:
+      'The user just joined the session and can hear you. Open per "How you open" — one or two sentences, then stop.',
     playAudio: (pcm) => speaker.play(pcm),
     stopAudio: () => speaker.stop(),
     onTranscript: (role, text) => console.log(`${role === 'user' ? 'you' : 'coach'}: ${text}`),
