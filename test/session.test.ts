@@ -335,6 +335,24 @@ test('manual end works when the model misses the handoff', async () => {
   await session.settleAnalyses();
 });
 
+test('begin_rehearsal cuts any in-flight coach speech cleanly', async () => {
+  const provider = new MockRealtimeProvider();
+  let stopped = 0;
+  const session = new CoachSession({
+    provider,
+    analyzer: new FakeAnalyzer(),
+    memory: new FileCoachMemory(fs.mkdtempSync(path.join(os.tmpdir(), 'coach-cut-'))),
+    recorder: new PcmTakeRecorder(),
+    stopAudio: () => stopped++,
+  });
+  await session.start();
+  await callTool(provider, 'c1', 'set_meeting', { title: 'Pitch' });
+  assert.equal(provider.interrupts, 0);
+  await callTool(provider, 'c2', 'begin_rehearsal');
+  assert.equal(stopped, 1); // speaker flushed
+  assert.equal(provider.interrupts, 1); // in-flight response cancelled
+});
+
 test('barge-in stops playback and interrupts the provider', async () => {
   const provider = new MockRealtimeProvider();
   let stopped = 0;

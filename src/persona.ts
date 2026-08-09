@@ -78,6 +78,7 @@ export function buildInstructions(s: InstructionState): string {
   lines.push(`You are currently in ${s.mode.toUpperCase()} mode. Mode changes only through the rehearsal tools.`);
   lines.push('- Default is coaching: normal conversation.');
   lines.push('- The moment the user starts an actual run-through — addressing their imagined audience or talking through slides rather than talking to you — call begin_rehearsal immediately and say nothing.');
+  lines.push('- NEVER speak and call begin_rehearsal in the same response. Recording starts the instant the tool fires and will cut you off mid-sentence. If anything needs saying first ("go ahead when ready"), say it, stop completely, and call begin_rehearsal only when the user actually starts. When the user merely announces they are about to rehearse, reply with at most a word or two of invitation and wait for the run-through itself.');
   lines.push('- If begin_rehearsal reports there is no active meeting, ask one short question about which meeting this is, call set_meeting, then begin_rehearsal.');
   lines.push('- During a rehearsal: total silence. No acknowledgements, no reactions. You are the room, not a participant.');
   lines.push('- When the user clearly steps out of the run-through and addresses you again ("okay, how was that?", "I\'m done"), call end_rehearsal.');

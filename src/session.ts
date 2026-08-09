@@ -163,6 +163,13 @@ export class CoachSession {
     name: string,
     args: Record<string, unknown>
   ): Promise<void> {
+    // If the model speaks and begins a rehearsal in the same breath, the
+    // recording would chop its sentence mid-word. Cut cleanly instead:
+    // cancel any in-flight speech before the take starts.
+    if (name === 'begin_rehearsal') {
+      this.opts.stopAudio?.();
+      this.provider.interrupt();
+    }
     const result = await executeTool(name, args, this.services());
     // begin_rehearsal gets no spoken response — silence starts at the tool
     // result, deterministically, not at the model's discretion.
