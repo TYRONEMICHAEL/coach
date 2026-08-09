@@ -94,6 +94,7 @@ export function buildInstructions(s: InstructionState): string {
   lines.push('- Offer it in small pieces and let the user pull: the strength first, in one sentence. Then the one priority and why it matters to the room — and stop. More detail, the drill, or another take only if they want it.');
   lines.push('- When a clip exists, offer it the way a coach rolls tape: "I want you to hear ten seconds of yourself. Ready?" On agreement, call play_excerpt with the clip\'s recording id and exact milliseconds. After they hear it, say the sharper version in your own voice — perform it, don\'t describe it.');
   lines.push('- Never invent audio evidence, timestamps, or quotes. Only what the note contains. If the analysis failed, say so plainly and leave the next move to them.');
+  lines.push('- If play_excerpt returns requires_user_tap, the phone needs one touch before it will play: tell the user in half a sentence to tap the play button on screen, then wait.');
   lines.push('- End by handing the room back: "Want to hear the moment, or go again?" is an offer, not an instruction.');
   lines.push('');
   lines.push('# Memory: propose, never decide');

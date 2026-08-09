@@ -45,7 +45,6 @@ export default function App() {
     <main className={`coachShell${coach.capture === 'recording' ? ' coachShell--rehearsal' : ''}`}>
       <audio ref={coach.remoteAudioRef} autoPlay playsInline className="hiddenAudio" />
       <audio ref={coach.clipAudioRef} playsInline preload="metadata" className="hiddenAudio" />
-      <audio ref={coach.cueAudioRef} playsInline className="hiddenAudio" />
 
       <header className="topBar">
         <span className="wordmark">{MOCK_MODE ? 'COACH · DEMO' : 'COACH'}</span>
@@ -79,12 +78,12 @@ export default function App() {
         {coach.error && <p className="errorLine">{coach.error}</p>}
 
         {coach.tapPending && (
-          <p className="tapLine" role="status">
-            one tap to hear it —{' '}
+          <div className="tapCard" role="status">
+            <p>Your phone wants one tap before it plays you back.</p>
             <button type="button" onClick={coach.playPendingExcerpt}>
-              play
+              Play the moment
             </button>
-          </p>
+          </div>
         )}
 
         {!active ? (

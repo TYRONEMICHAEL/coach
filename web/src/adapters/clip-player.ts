@@ -37,11 +37,12 @@ export function blessAudioElement(element: HTMLAudioElement): void {
   }
 }
 
-/** Soft earcons for eyes-free state changes: a rising pair when recording
- * starts, a falling pair when it stops — the Voice Memos convention. */
+/** Earcons for eyes-free state changes: a rising pair when recording
+ * starts, a falling pair when it stops — the Voice Memos convention.
+ * Loud enough to cut through speech at arm's length. */
 function cueWavUrl(kind: 'start' | 'stop'): string {
-  const noteMs = 90;
-  const gapMs = 30;
+  const noteMs = 110;
+  const gapMs = 40;
   const total = Math.round((SAMPLE_RATE * (noteMs * 2 + gapMs)) / 1000);
   const pcm = new Uint8Array(total * 2);
   const view = new DataView(pcm.buffer);
@@ -54,7 +55,7 @@ function cueWavUrl(kind: 'start' | 'stop'): string {
     const noteT = inFirst ? ms / 1000 : (ms - noteMs - gapMs) / 1000;
     const freq = inFirst ? freqs[0]! : freqs[1]!;
     const envelope = Math.sin(Math.PI * Math.min(1, (noteT * 1000) / noteMs));
-    view.setInt16(i * 2, Math.round(Math.sin(2 * Math.PI * freq * noteT) * envelope * 0.16 * 0x7fff), true);
+    view.setInt16(i * 2, Math.round(Math.sin(2 * Math.PI * freq * noteT) * envelope * 0.3 * 0x7fff), true);
   }
   const wav = pcm16ToWav(pcm, SAMPLE_RATE);
   const bytes = new Uint8Array(wav);
@@ -198,6 +199,7 @@ export class BrowserClipPlayer implements ExcerptPlayer {
     }
 
     this.opts.duck(true);
+    let maxReachedMs = startMs;
     try {
       await new Promise<void>((resolve) => {
         // iOS can stall the element's clock mid-playback; without a hard
@@ -209,6 +211,7 @@ export class BrowserClipPlayer implements ExcerptPlayer {
         // to three times, before giving up.
         let resumes = 0;
         const timer = window.setInterval(() => {
+          maxReachedMs = Math.max(maxReachedMs, audio.currentTime * 1000);
           if (audio.ended || audio.currentTime * 1000 >= endMs) {
             finish();
             return;
@@ -233,6 +236,20 @@ export class BrowserClipPlayer implements ExcerptPlayer {
     } finally {
       this.stopCurrent = undefined;
       this.opts.duck(false);
+    }
+    // Silent no-op detection: if almost none of the window actually played,
+    // the phone swallowed it — surface the one-tap play instead of lying.
+    const playedMs = maxReachedMs - startMs;
+    if (playedMs < Math.min(1_500, (endMs - startMs) * 0.4)) {
+      this.opts.onNeedsTap(() => {
+        void this.playInternal(take, startMs, endMs, true);
+      });
+      return {
+        played: false,
+        requires_user_tap: true,
+        reason:
+          'The phone blocked hands-free playback of the take. A play button is on screen — ask the user to tap it, briefly.',
+      };
     }
     return { played: true, start_ms: startMs, end_ms: endMs };
   }

@@ -123,10 +123,12 @@ button { font: inherit; }
 
 .errorLine { margin-top: 14px; max-width: 480px; color: #8f342a; font-size: 14px; line-height: 1.5; }
 
-.tapLine { margin-top: 14px; color: #514d46; font-size: 14px; }
-.tapLine button {
-  border: 0; background: transparent; cursor: pointer; padding: 2px 0;
-  color: var(--terracotta); font-size: 15px; border-bottom: 1px solid var(--terracotta);
+.tapCard { margin-top: 20px; text-align: center; }
+.tapCard p { color: #514d46; font-size: 14px; }
+.tapCard button {
+  margin-top: 10px; padding: 12px 26px; cursor: pointer;
+  border: 1px solid var(--terracotta); border-radius: 999px;
+  background: var(--terracotta); color: white; font-size: 16px; font-weight: 640;
 }
 
 .controls {

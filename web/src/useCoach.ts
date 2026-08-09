@@ -83,7 +83,6 @@ export function useCoach() {
   const playerRef = useRef<BrowserClipPlayer | null>(null);
   const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
   const clipAudioRef = useRef<HTMLAudioElement | null>(null);
-  const cueAudioRef = useRef<HTMLAudioElement | null>(null);
   const levelsRef = useRef<LevelEngine | null>(null);
   const takeTimerRef = useRef<number | null>(null);
   const speakingDropRef = useRef<number | null>(null);
@@ -243,7 +242,6 @@ export function useCoach() {
     });
     player.unlock();
     blessAudioElement(remoteAudio);
-    if (cueAudioRef.current) blessAudioElement(cueAudioRef.current);
     playerRef.current = player;
     void getSharedCtx()?.resume().catch(() => undefined);
 
@@ -321,8 +319,9 @@ export function useCoach() {
         },
         onCaptureChange: (state) => {
           setCapture(state);
-          // Eyes-free legibility: the Voice Memos tick, in and out.
-          const cueElement = cueAudioRef.current;
+          // Eyes-free legibility: the Voice Memos tick, in and out — played
+          // through the clip element, the one with a proven audible path.
+          const cueElement = clipAudioRef.current;
           if (cueElement && state === 'recording') playCue(cueElement, 'start');
           if (cueElement && state === 'finalizing') playCue(cueElement, 'stop');
           if (state === 'recording') {
@@ -438,7 +437,6 @@ export function useCoach() {
       : null,
     remoteAudioRef,
     clipAudioRef,
-    cueAudioRef,
     begin,
     end,
     toggleMute,
