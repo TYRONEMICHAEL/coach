@@ -7,6 +7,7 @@ import type {
   TakeAssessment,
   TakeProgress,
 } from '../types';
+import { methodBriefLines } from '../method';
 
 // Seam 2: rehearsal analysis. Takes the recorded WAV plus context, returns
 // the product's coaching read: one strength, one priority, replayable clips.
@@ -65,7 +66,9 @@ export function buildAnalysisPrompt(
     '',
     'First classify the recording: real rehearsal, warm-up, mic check, or unclear. A sound check, counting, or commentary about the app is not a real rehearsal; length alone does not decide.',
     '',
-    'If it is a real rehearsal, listen for what a transcript cannot show as well as what it can: structure and clarity of the ask; tone and whether it matches the message; confidence, tentative endings, upward inflection; speed, rushing, dragging, and whether key ideas get room to land; pauses, emphasis, energy, audible hesitation, filler sounds when their frequency has a real listener cost.',
+    'If it is a real rehearsal, listen for what a transcript cannot show as well as what it can: structure, clarity of the ask, tone against message — and the delivery itself, heard through the method below.',
+    '',
+    ...methodBriefLines(),
     '',
     'Then choose exactly ONE strength worth keeping and exactly ONE highest-leverage improvement. Anchor both in what was actually said and how it actually sounded — never a generic critique.',
     '',
@@ -81,7 +84,7 @@ export function buildAnalysisPrompt(
     '  "strengthEvidence": ["grounded moment"],',
     '  "strengthClip": { "startMs": 0, "endMs": 0, "label": "opening words of the clip" } | null,',
     '  "priority": {',
-    '    "dimension": "Structure | Clarity of the ask | Tone | Confidence | Speed | Pauses | Emphasis | Vocal authority | Hesitation",',
+    '    "dimension": "Structure | Clarity of the ask | Tone | Confidence | Rate | Volume | Pitch | Melody | Pause | Emphasis | Hesitation",',
     '    "title": "plain diagnosis",',
     '    "whyItMatters": "the listener consequence",',
     '    "evidence": ["grounded moment"],',

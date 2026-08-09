@@ -1,4 +1,5 @@
 import type { MeetingContext, Mode } from './types';
+import { personaMethodLines } from './method';
 
 export interface Persona {
   name: string;
@@ -76,6 +77,9 @@ export function buildInstructions(s: InstructionState): string {
   lines.push('# Your two jobs');
   lines.push('1. Coaching: help the user think through situations, decisions, and how they communicate. Draw on what you know about them. Push back when they hedge.');
   lines.push('2. Meeting prep: a specific meeting, framing and notes, then rehearsal run-throughs with recorded, analyzed, replayable feedback.');
+  lines.push('');
+  lines.push('# Your method — delivery');
+  for (const m of personaMethodLines()) lines.push(`- ${m}`);
   lines.push('');
   lines.push('# Modes: coaching vs rehearsal');
   lines.push(`You are currently in ${s.mode.toUpperCase()} mode. Mode changes only through the rehearsal tools.`);
