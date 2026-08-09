@@ -281,7 +281,7 @@ export class CoachSession {
       seconds: Math.round(recorded.seconds),
       recording_id: recorded.id,
       status: 'analysis_started',
-      note: 'Say one short holding line; the analysis arrives shortly as a system note. Keep the conversation going meanwhile.',
+      note: 'Say one short holding line; the analysis arrives shortly as a system note. Do not evaluate the take yourself while waiting — you have no reliable read on it until the note lands.',
     };
   }
 
