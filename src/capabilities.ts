@@ -19,6 +19,8 @@ export interface CapabilityServices {
     startMs: number;
     endMs: number;
   }): Promise<ExcerptResult> | ExcerptResult;
+  /** Re-send a failed take for analysis. */
+  retryAnalysis(recordingId?: string): CapabilityResult;
 }
 
 export function coachTools(): RealtimeTool[] {
@@ -86,6 +88,15 @@ export function coachTools(): RealtimeTool[] {
       parameters: { type: 'object', properties: {} },
     },
     {
+      name: 'retry_analysis',
+      description:
+        'Re-send a captured take for analysis after a failure. recording_id optional — defaults to the most recent failed take.',
+      parameters: {
+        type: 'object',
+        properties: { recording_id: { type: 'string' } },
+      },
+    },
+    {
       name: 'play_excerpt',
       description:
         'Play a precise excerpt of the user\'s own recorded take back to them — the moment cited in the analysis, or any span they ask to hear. Use the clip start/end milliseconds from the analysis note.',
@@ -128,6 +139,8 @@ export async function executeTool(
         return services.beginRehearsal();
       case 'end_rehearsal':
         return await services.endRehearsal();
+      case 'retry_analysis':
+        return services.retryAnalysis(optionalString(args, 'recording_id'));
       case 'play_excerpt':
         return (await services.playExcerpt({
           recordingId: optionalString(args, 'recording_id'),

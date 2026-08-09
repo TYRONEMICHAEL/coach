@@ -26,6 +26,20 @@ export interface MeetingContext {
   goal?: string;
 }
 
+/** The visible life of one analyzed take — what UIs render as history. */
+export type TakeAnalysisStatus = 'analyzing' | 'ready' | 'failed';
+export interface TakeLifecycleRecord {
+  id: string;
+  takeNumber: number;
+  meeting: MeetingContext;
+  seconds: number;
+  status: TakeAnalysisStatus;
+  /** 1-based analysis attempt (auto-retries and manual retries count up). */
+  attempt: number;
+  error?: string;
+  feedback?: RehearsalFeedback;
+}
+
 /** A finished take: canonical analyzable audio plus where it persists. */
 export interface RecordedTake {
   /** Harness-issued id, e.g. "q3-board-review-take-2". */

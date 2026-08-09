@@ -153,6 +153,24 @@ button { font: inherit; }
 .textButton.accent { color: var(--terracotta); }
 .textButton.accent:hover { border-color: var(--terracotta); }
 
+/* Takes history: which recordings exist, where each is on its journey. */
+.takesList { width: min(560px, 88vw); margin-top: 34px; text-align: left; }
+.takeRow { border-top: 1px solid var(--line); }
+.takeRow:last-child { border-bottom: 1px solid var(--line); }
+.takeRow summary { display: flex; align-items: baseline; gap: 10px; padding: 11px 2px; cursor: pointer; list-style: none; font-size: 13.5px; color: var(--ink); }
+.takeRow summary::-webkit-details-marker { display: none; }
+.takeGlyph { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); align-self: center; flex: none; }
+.takeRow--analyzing .takeGlyph { background: var(--terracotta); animation: recPulse 1.4s ease-in-out infinite; }
+.takeRow--ready .takeGlyph { background: #5e7d5a; }
+.takeRow--failed .takeGlyph { background: #8f342a; }
+.takeState { margin-left: auto; padding-left: 14px; color: var(--muted); font-family: var(--font-serif); font-style: italic; font-size: 13px; text-align: right; }
+.takeRow--failed .takeState { color: #8f342a; }
+.takeDetail { padding: 2px 2px 14px 17px; font-size: 13px; line-height: 1.55; color: #514d46; }
+.takeDetail p { margin: 4px 0; }
+.takeDetail em { margin-right: 7px; font-style: normal; color: var(--terracotta); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+.takeError { color: #8f342a; }
+.takeDetail button { margin-top: 6px; padding: 2px 0; border: 0; border-bottom: 1px solid var(--terracotta); background: transparent; color: var(--terracotta); font-size: 13.5px; cursor: pointer; }
+
 .privacyLine {
   margin-top: clamp(40px, 8vh, 72px);
   max-width: 470px;

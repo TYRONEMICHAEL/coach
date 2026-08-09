@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CoachSession } from '../../src/session';
 import { defaultPersona } from '../../src/persona';
-import type { CaptureState, Mode, RehearsalFeedback } from '../../src/types';
+import type { CaptureState, Mode, RehearsalFeedback, TakeLifecycleRecord } from '../../src/types';
 import { BrowserClipPlayer, blessAudioElement, playCue } from './adapters/clip-player';
 import { LocalCoachMemory, MEMORY_EVENT } from './adapters/local-memory';
 import { MediaRecorderTake } from './adapters/media-recorder';
@@ -74,6 +74,7 @@ export function useCoach() {
   const [memoryVersion, setMemoryVersion] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   const [replaying, setReplaying] = useState(false);
+  const [takes, setTakes] = useState<TakeLifecycleRecord[]>([]);
   const [demoFeedback, setDemoFeedback] = useState<RehearsalFeedback | null>(null);
   const [demoLog, setDemoLog] = useState<string[]>([]);
 
@@ -339,6 +340,7 @@ export function useCoach() {
           setAnalysisPending(state === 'started');
           if (state !== 'started') setProgressMessage('');
         },
+        onTakesChange: setTakes,
       });
       sessionRef.current = session;
       await session.start();
@@ -399,6 +401,10 @@ export function useCoach() {
     sessionRef.current?.beginRehearsalManually();
   }, []);
 
+  const retryTake = useCallback((id: string) => {
+    sessionRef.current?.retryAnalysis(id);
+  }, []);
+
   const playPendingExcerpt = useCallback(() => {
     // Nothing may run before the retry: Safari must see play() inside the tap.
     const retry = tapRetry;
@@ -431,6 +437,7 @@ export function useCoach() {
     memoryVersion,
     elapsed,
     replaying,
+    takes,
     tapPending: tapRetry !== null,
     demo: MOCK_MODE
       ? { provider: providerRef, feedback: demoFeedback, log: demoLog }
@@ -442,6 +449,7 @@ export function useCoach() {
     toggleMute,
     startTake,
     finishTake,
+    retryTake,
     playPendingExcerpt,
   };
 }

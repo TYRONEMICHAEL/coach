@@ -113,6 +113,63 @@ export default function App() {
           </div>
         )}
 
+        {coach.takes.length > 0 && coach.capture !== 'recording' && (
+          <div className="takesList">
+            {coach.takes.map((take) => (
+              <details key={take.id} className={`takeRow takeRow--${take.status}`}>
+                <summary>
+                  <span className="takeGlyph" aria-hidden="true" />
+                  take {take.takeNumber} · {formatElapsed(Math.round(take.seconds))}
+                  <span className="takeState">
+                    {take.status === 'analyzing'
+                      ? coach.progressMessage || 'listening back…'
+                      : take.status === 'ready'
+                        ? 'read'
+                        : 'failed'}
+                  </span>
+                </summary>
+                <div className="takeDetail">
+                  {take.status === 'ready' && take.feedback && (
+                    <>
+                      {take.feedback.progress && (
+                        <p>
+                          <em>progress</em>
+                          {take.feedback.progress.verdict} — {take.feedback.progress.note}
+                        </p>
+                      )}
+                      <p>
+                        <em>keep</em>
+                        {take.feedback.strength}
+                      </p>
+                      {take.feedback.priority ? (
+                        <p>
+                          <em>fix</em>
+                          {take.feedback.priority.title} — {take.feedback.priority.correction}
+                        </p>
+                      ) : (
+                        <p>
+                          {take.feedback.assessment.kind} — {take.feedback.assessment.reason}
+                        </p>
+                      )}
+                    </>
+                  )}
+                  {take.status === 'failed' && (
+                    <>
+                      <p className="takeError">{take.error}</p>
+                      <button type="button" onClick={() => coach.retryTake(take.id)}>
+                        send it again
+                      </button>
+                    </>
+                  )}
+                  {take.status === 'analyzing' && (
+                    <p>attempt {take.attempt} — {coach.progressMessage || 'working…'}</p>
+                  )}
+                </div>
+              </details>
+            ))}
+          </div>
+        )}
+
         <p className="privacyLine">
           Takes stay in this tab and are sent once, only to be analyzed. Notes and kept memories live on this
           device — the coach proposes, the harness decides.

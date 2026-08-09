@@ -31,8 +31,13 @@ const FEEDBACK: RehearsalFeedback = {
 class FakeAnalyzer {
   requests: AnalyzeRequest[] = [];
   failWith?: string;
+  failTimes = 0;
   async analyze(request: AnalyzeRequest): Promise<RehearsalFeedback> {
     this.requests.push(request);
+    if (this.failTimes > 0) {
+      this.failTimes -= 1;
+      throw new Error('transient analyzer failure');
+    }
     if (this.failWith) throw new Error(this.failWith);
     return FEEDBACK;
   }
@@ -63,6 +68,7 @@ function makeSession() {
     recorder: new PcmTakeRecorder(),
     player,
     beginCooldownMs: 0,
+    analysisRetryDelaysMs: [],
     playAudio: (pcm) => played.push(pcm),
     onStatus: (line) => statuses.push(line),
     onModeChange: (mode) => modes.push(mode),
@@ -102,7 +108,7 @@ test('connect sends persona, memory, and the six tools', async () => {
   const { session, provider } = makeSession();
   await session.start();
   assert.ok(provider.config);
-  assert.equal(provider.config.tools.length, 6);
+  assert.equal(provider.config.tools.length, 7);
   assert.match(provider.config.instructions, /You are Marguerite/);
   assert.match(provider.config.instructions, /begin_rehearsal/);
   assert.match(provider.config.instructions, /play_excerpt/);
@@ -318,7 +324,7 @@ test('a failed analysis is reported into the conversation, recording kept', asyn
   const note = provider.systemNotes.find((n) => n.text.includes('analysis failed'));
   assert.ok(note);
   assert.match(note.text, /analyzer http 500/);
-  assert.match(note.text, /recording itself is saved/);
+  assert.match(note.text, /recording itself is safe/);
   assert.ok(fs.existsSync(path.join(memory.dataDir, 'recordings', 'pitch-take-1.wav')));
 });
 
@@ -382,6 +388,51 @@ test('boundary misfires: fragments are discarded, hasty begins refused, manual s
   await callTool(provider, 'c5', 'end_rehearsal');
   await session.settleAnalyses();
   assert.equal(analyzer.requests.length, 1);
+});
+
+test('analysis retries automatically; retry_analysis re-sends after final failure', async () => {
+  const provider = new MockRealtimeProvider();
+  const analyzer = new FakeAnalyzer();
+  const timeline: string[] = [];
+  const session = new CoachSession({
+    provider,
+    analyzer,
+    memory: new FileCoachMemory(fs.mkdtempSync(path.join(os.tmpdir(), 'coach-retry-'))),
+    recorder: new PcmTakeRecorder(),
+    beginCooldownMs: 0,
+    analysisRetryDelaysMs: [0],
+    onTakesChange: (takes) =>
+      timeline.push(takes.map((t) => `${t.takeNumber}:${t.status}:${t.attempt}`).join(' ')),
+  });
+  await session.start();
+  await callTool(provider, 'c1', 'set_meeting', { title: 'Pitch' });
+
+  // One transient failure is invisible: the automatic retry lands it.
+  analyzer.failTimes = 1;
+  await callTool(provider, 'c2', 'begin_rehearsal');
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 3));
+  await callTool(provider, 'c3', 'end_rehearsal');
+  await session.settleAnalyses();
+  assert.equal(analyzer.requests.length, 2);
+  assert.match(timeline.at(-1)!, /^1:ready:2$/);
+  assert.ok(!provider.systemNotes.some((n) => n.text.includes('analysis failed')));
+
+  // Exhausting every attempt reaches the conversation with the retry paths
+  // named — and retry_analysis brings it home.
+  analyzer.failTimes = 2;
+  await callTool(provider, 'c4', 'begin_rehearsal');
+  session.sendMicAudio(new Uint8Array(BYTES_PER_SECOND * 3));
+  await callTool(provider, 'c5', 'end_rehearsal');
+  await session.settleAnalyses();
+  const failNote = provider.systemNotes.find((n) => n.text.includes('analysis failed after 2 attempts'));
+  assert.ok(failNote);
+  assert.match(failNote.text, /retry_analysis/);
+  assert.match(timeline.at(-1)!, /^2:failed:2 /);
+
+  const retried = await callTool(provider, 'c6', 'retry_analysis');
+  assert.equal(retried.output.status, 'analysis_restarted');
+  await session.settleAnalyses();
+  assert.match(timeline.at(-1)!, /^2:ready:3 /);
 });
 
 test('begin_rehearsal cuts any in-flight coach speech cleanly', async () => {

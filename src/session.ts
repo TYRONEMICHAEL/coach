@@ -17,6 +17,7 @@ import type {
   Mode,
   RecordedTake,
   RehearsalTake,
+  TakeLifecycleRecord,
   TakeRecorder,
 } from './types';
 
@@ -34,6 +35,11 @@ export interface CoachSessionOptions {
   /** How long after a take ends before the MODEL may begin another
    * (misfire guard). The user's manual start always bypasses. */
   beginCooldownMs?: number;
+  /** Waits between automatic analysis retries; length = extra attempts.
+   * Default two retries (2s, 5s). Empty array = single attempt. */
+  analysisRetryDelaysMs?: number[];
+  /** Fired whenever any take's lifecycle changes — the UI's history. */
+  onTakesChange?: (takes: TakeLifecycleRecord[]) => void;
   playAudio?: (pcm: Uint8Array) => void;
   stopAudio?: () => void;
   onTranscript?: (role: 'user' | 'coach', text: string) => void;
@@ -67,6 +73,7 @@ export class CoachSession {
   private readonly persona: Persona;
   private currentTake?: Omit<RehearsalTake, 'seconds'>;
   private readonly takes = new Map<string, RecordedTake>();
+  private records: TakeLifecycleRecord[] = [];
   private lastTakeId?: string;
   private lastTakeEndedAt = 0;
   private pendingAnalyses: Promise<void>[] = [];
@@ -226,6 +233,7 @@ export class CoachSession {
       beginRehearsal: () => this.beginRehearsal(),
       endRehearsal: () => this.endRehearsal(),
       playExcerpt: (input) => this.playExcerpt(input),
+      retryAnalysis: (recordingId) => this.retryAnalysis(recordingId),
     };
   }
 
@@ -321,6 +329,15 @@ export class CoachSession {
     // audio is already loaded and seekable.
     this.player?.prime?.(recorded);
     const take: RehearsalTake = { ...pending, seconds: recorded.seconds };
+    this.records.unshift({
+      id: recorded.id,
+      takeNumber: take.takeNumber,
+      meeting: take.meeting,
+      seconds: recorded.seconds,
+      status: 'analyzing',
+      attempt: 1,
+    });
+    this.emitTakes();
     this.setCapture('analyzing');
     this.status(`captured ${formatDuration(recorded.seconds)} — analysis dispatched`);
     this.dispatchAnalysis(take, recorded);
@@ -369,37 +386,85 @@ export class CoachSession {
 
   private dispatchAnalysis(take: RehearsalTake, recorded: RecordedTake): void {
     this.opts.onAnalysis?.('started', take.takeNumber);
-    const pending = this.analyzer
-      .analyze({
-        wav: recorded.wav,
-        durationMs: Math.round(recorded.seconds * 1000),
-        meeting: take.meeting,
-        learnings: this.memory.learnings(),
-        takeNumber: take.takeNumber,
-        // Read before this take's feedback lands: the previous take's read.
-        previousSummary: this.memory.lastRehearsalSummary(take.meeting.slug),
-      })
-      .then((feedback) => {
+    this.pendingAnalyses.push(this.runAnalysis(take, recorded));
+  }
+
+  /** Analyze with automatic retries: transient failures should cost the
+   * user nothing. Only a final failure reaches the conversation — with the
+   * retry paths named. */
+  private async runAnalysis(take: RehearsalTake, recorded: RecordedTake): Promise<void> {
+    const delays = this.opts.analysisRetryDelaysMs ?? [2_000, 5_000];
+    const attempts = delays.length + 1;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        const feedback = await this.analyzer.analyze({
+          wav: recorded.wav,
+          durationMs: Math.round(recorded.seconds * 1000),
+          meeting: take.meeting,
+          learnings: this.memory.learnings(),
+          takeNumber: take.takeNumber,
+          // Read before this take's feedback lands: the previous take's read.
+          previousSummary: this.memory.lastRehearsalSummary(take.meeting.slug),
+        });
         this.memory.addRehearsalFeedback(take, feedback);
         // Continuity lands immediately: "where we left off" is true within
         // the same session, not just the next one.
         this.refreshInstructions();
+        this.updateRecord(recorded.id, { status: 'ready', feedback, error: undefined });
         this.provider.injectSystemNote(formatFeedbackNote(take, feedback), { startResponse: true });
         this.setCapture('idle');
         this.status(`analysis ready for take ${take.takeNumber}`);
         this.opts.onAnalysis?.('ready', take.takeNumber);
-      })
-      .catch((err: unknown) => {
+        return;
+      } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        if (attempt < attempts) {
+          this.status(`analysis attempt ${attempt} failed (${message}) — retrying`);
+          this.updateRecord(recorded.id, { attempt: attempt + 1, error: message });
+          await sleep(delays[attempt - 1] ?? 0);
+          continue;
+        }
+        this.updateRecord(recorded.id, { status: 'failed', error: message });
         this.provider.injectSystemNote(
-          `The rehearsal analysis failed (${message}). Tell the user plainly and offer another take; the recording itself is saved.`,
+          `The rehearsal analysis failed after ${attempts} attempts (${message}). The recording itself is safe. Tell the user plainly, in one sentence. You can call retry_analysis to send it again when they want, and a retry control is also on their screen.`,
           { startResponse: true }
         );
         this.setCapture('idle');
         this.status(`analysis failed: ${message}`);
         this.opts.onAnalysis?.('failed', take.takeNumber);
-      });
-    this.pendingAnalyses.push(pending);
+      }
+    }
+  }
+
+  /** Re-send a captured take whose analysis failed — callable by the model
+   * (retry_analysis) and by the user from the takes list. */
+  retryAnalysis(recordingId?: string): CapabilityResult {
+    const record = recordingId
+      ? this.records.find((r) => r.id === recordingId)
+      : this.records.find((r) => r.status === 'failed');
+    if (!record) return { error: recordingId ? `no take ${recordingId}` : 'no failed take to retry' };
+    if (record.status === 'analyzing') return { error: 'that take is already being analyzed' };
+    const recorded = this.takes.get(record.id);
+    if (!recorded) return { error: 'that take is no longer available in this session' };
+    this.updateRecord(record.id, { status: 'analyzing', attempt: record.attempt + 1, error: undefined });
+    this.setCapture('analyzing');
+    this.status(`re-sending take ${record.takeNumber} for analysis`);
+    this.dispatchAnalysis(
+      { meeting: record.meeting, takeNumber: record.takeNumber, id: record.id, seconds: record.seconds },
+      recorded
+    );
+    return { ok: true, status: 'analysis_restarted', take: record.takeNumber };
+  }
+
+  private updateRecord(id: string, patch: Partial<TakeLifecycleRecord>): void {
+    const record = this.records.find((r) => r.id === id);
+    if (!record) return;
+    Object.assign(record, patch);
+    this.emitTakes();
+  }
+
+  private emitTakes(): void {
+    this.opts.onTakesChange?.(this.records.map((r) => ({ ...r })));
   }
 
   private setMode(mode: Mode): void {
@@ -441,4 +506,8 @@ export class CoachSession {
   private status(line: string): void {
     this.opts.onStatus?.(line);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
