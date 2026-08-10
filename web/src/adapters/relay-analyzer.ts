@@ -12,6 +12,7 @@ import type { RehearsalFeedback } from '../../../src/types';
 export class RelayAnalyzer implements RehearsalAnalyzer {
   constructor(
     private readonly onProgress?: (message: string) => void,
+    private readonly getCapture?: () => unknown,
     private readonly url = '/api/analyze'
   ) {}
 
@@ -57,6 +58,7 @@ export class RelayAnalyzer implements RehearsalAnalyzer {
           learnings: request.learnings,
           takeNumber: request.takeNumber,
           previousSummary: request.previousSummary,
+          capture: this.getCapture?.(),
         })
       );
     });

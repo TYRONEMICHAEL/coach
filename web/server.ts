@@ -132,6 +132,7 @@ async function analyze(req: http.IncomingMessage, res: http.ServerResponse): Pro
     learnings?: string[];
     takeNumber?: number;
     previousSummary?: string;
+    capture?: unknown;
   };
   try {
     parsed = JSON.parse((await readBody(req)).toString('utf8'));
@@ -166,7 +167,7 @@ async function analyze(req: http.IncomingMessage, res: http.ServerResponse): Pro
           textModel: process.env.COACH_AB_TEXT_MODEL,
           judgeModel: process.env.COACH_AB_JUDGE_MODEL,
         },
-        { request, audioFeedback: feedback, audioModel: ANALYZER_MODEL }
+        { request, audioFeedback: feedback, audioModel: ANALYZER_MODEL, captureMeta: parsed.capture }
       )
         .then((dir) => console.log(`ab bundle: ${dir}`))
         .catch((err: unknown) =>

@@ -261,8 +261,12 @@ export function useCoach() {
 
       let stream: MediaStream | null = null;
       try {
+        // Echo cancellation stays — the coach speaks over this mic. Noise
+        // suppression and auto-gain go: both rewrite the breath, level, and
+        // texture the listening specialist analyzes, and processing steps
+        // are the prime suspect for capture clicks on iOS.
         const request = navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true },
+          audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false },
         });
         // Demo mode never waits on a mic: three seconds, then synthetic.
         stream = MOCK_MODE
@@ -297,7 +301,16 @@ export function useCoach() {
 
       const analyzer = MOCK_MODE
         ? new MockAnalyzer((feedback) => setDemoFeedback(feedback))
-        : new RelayAnalyzer((message) => setProgressMessage(message));
+        : new RelayAnalyzer(
+            (message) => setProgressMessage(message),
+            // Capture telemetry rides along with every take: what the mic
+            // track really honored and which recorder the browser chose.
+            () => ({
+              trackSettings: micRef.current?.getAudioTracks()[0]?.getSettings?.() ?? null,
+              recorderMimeType:
+                recorder instanceof MediaRecorderTake ? (recorder.lastMimeType ?? null) : 'synthetic',
+            })
+          );
 
       const session = new CoachSession({
         provider,

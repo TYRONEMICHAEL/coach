@@ -98,6 +98,8 @@ export class MediaRecorderTake implements TakeRecorder {
   private recorder?: MediaRecorder;
   private chunks: Blob[] = [];
   private id?: string;
+  /** Which container/codec the browser actually chose — capture telemetry. */
+  lastMimeType?: string;
 
   constructor(private readonly getStream: () => MediaStream | null) {}
 
@@ -113,6 +115,7 @@ export class MediaRecorderTake implements TakeRecorder {
     const mimeType = selectRecordingMimeType((type) => MediaRecorder.isTypeSupported(type));
     const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
     this.recorder = recorder;
+    this.lastMimeType = recorder.mimeType || mimeType;
     this.id = id;
     this.chunks = [];
     recorder.ondataavailable = (event) => {

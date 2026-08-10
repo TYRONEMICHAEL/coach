@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { buildAnalysisPrompt, parseFeedbackJson } from '../src/analysis/analyzer';
 import type { AnalyzeRequest } from '../src/analysis/analyzer';
+import { scanCaptureQuality } from './capture-quality';
 import { pcm16ToWav } from '../src/recorder';
 import type { EvidenceClip, RehearsalFeedback } from '../src/types';
 import { SAMPLE_RATE } from '../src/types';
@@ -38,6 +39,8 @@ export interface AbInput {
   request: AnalyzeRequest;
   audioFeedback: RehearsalFeedback;
   audioModel: string;
+  /** Client-reported capture path (mic settings, recorder mime type). */
+  captureMeta?: unknown;
 }
 
 const TEXT_JUDGE_PREFIX =
@@ -58,6 +61,24 @@ export async function runAbExperiment(opts: AbOptions, input: AbInput): Promise<
     path.join(dir, 'audio-judge.json'),
     JSON.stringify({ model: input.audioModel, feedback: input.audioFeedback }, null, 2)
   );
+
+  // The recording grades itself: clicks in the capture are a measured fact
+  // in every bundle, so a crackling mic can never hide behind memory.
+  try {
+    const capture = scanCaptureQuality(request.wav, input.captureMeta);
+    fs.writeFileSync(path.join(dir, 'capture-quality.json'), JSON.stringify(capture, null, 2));
+    console.log(
+      `capture quality: ${capture.clickEvents} click event(s) in ${capture.seconds.toFixed(1)}s` +
+        ` (${capture.clicksPerMinute.toFixed(1)}/min)`
+    );
+    if (capture.clicksPerMinute > 2) {
+      problems.push(
+        `capture: ${capture.clickEvents} click events (${capture.clicksPerMinute.toFixed(1)}/min) — crackle is in the recording itself`
+      );
+    }
+  } catch (err) {
+    problems.push(`capture scan failed: ${message(err)}`);
+  }
 
   let transcript = '';
   try {
